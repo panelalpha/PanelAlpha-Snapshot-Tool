@@ -186,6 +186,12 @@ check_root() {
 # Load and validate configuration from .env-backup file
 load_configuration() {
     if [[ -f "$CONFIG_FILE" ]]; then
+        # Fix (ticket#2060): Remove PANELALPHA_DIR from old config files
+        if grep -q "^PANELALPHA_DIR=" "$CONFIG_FILE" 2>/dev/null; then
+            sed -i '/^PANELALPHA_DIR=/d' "$CONFIG_FILE" 2>/dev/null || true
+            sed -i '/^# PanelAlpha application settings$/d' "$CONFIG_FILE" 2>/dev/null || true
+        fi
+        
         # shellcheck source=/dev/null
         set -a
         source "$CONFIG_FILE"
@@ -841,9 +847,6 @@ BACKUP_TAG_PREFIX="panelalpha"
 LOG_FILE="$LOG_FILE"
 BACKUP_TEMP_DIR="/var/tmp"
 RESTIC_CACHE_DIR="/var/cache/restic"
-
-# PanelAlpha application settings
-PANELALPHA_DIR="/opt/panelalpha/app"
 EOF
 
     # Secure the configuration file
