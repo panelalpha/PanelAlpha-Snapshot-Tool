@@ -9,12 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - **Multi-application support**: Tool now supports both PanelAlpha Control Panel and PanelAlpha Engine
+- **Automatic update checking**: Script checks for new versions from GitHub (main branch) once per day
 - Automatic detection of application type (Control Panel vs Engine)
 - Support for Engine databases: `database-core` and `database-users`
 - Support for Engine volumes: `core-storage`, `database-core-data`, `database-users-data`
 - Support for Engine configuration file: `.env-core`
 - Application type information in snapshot metadata
 - Application type display in `--version` command
+- Backup creation before auto-update with timestamped filename
+- Script restart with same arguments after successful update
+- Environment variable `PASNAP_SKIP_UPDATE_CHECK=1` to disable update checks
 
 ### Changed
 - **Script filename**: Changed from `panelalpha-snapshot.sh` to `pasnap.sh` for brevity
@@ -48,13 +52,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - README.md: Updated introduction to mention support for both Control Panel and Engine
 - README.md: Clarified which components are backed up for each application type
 - Updated script header with new tool description
+- README.md: Added download/installation section with three methods (git clone, wget release, direct download)
 
 ### Technical Details
 - New constant: `PANELALPHA_APP_TYPE` (values: "engine", "app", or "unknown")
 - New constant: `ENV_FILE` (points to `.env` or `.env-core` based on app type)
+- New function: `check_for_updates()` - checks GitHub for newer versions
 - Detection logic checks for `/opt/panelalpha/engine` and `/opt/panelalpha/app`
 - Backward compatibility maintained: defaults to Control Panel if detection fails
 - Control Panel volumes reduced to: `api-storage`, `database-api-data`, `redis-data`
+- Update check runs once per 24 hours (cached in `/var/tmp/.pasnap_last_update_check`)
+- Update download includes integrity verification before replacement
+- Temporary directory naming changed from `panelalpha-snapshot-*` to `pasnap-snapshot-*`
+- Log file path changed from `/var/log/panelalpha-snapshot.log` to `/var/log/pasnap.log`
 
 ## [1.0.0] - Previous release
 
