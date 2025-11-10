@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: PanelAlpha Support
+    url: https://manage.panelalpha.com/contact
+    about: For PanelAlpha product support and general inquiries
+  - name: PanelAlpha Snapshot Tool Issues
+    url: https://github.com/panelalpha/PanelAlpha-Snapshot-Tool/issues
+    about: Report bugs or request features for the PanelAlpha Snapshot & Restore Tool

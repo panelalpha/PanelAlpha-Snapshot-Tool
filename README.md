@@ -2,22 +2,34 @@
 
 Professional tool for creating secure backups (snapshots) of PanelAlpha applications.
 
+**Supports both PanelAlpha Control Panel and PanelAlpha Engine**
+
 ## 🎯 What is this?
 
 This tool allows you to:
-- **Create complete backups** of PanelAlpha (databases, files, configuration)
+- **Create complete backups** of PanelAlpha Control Panel or Engine (databases, files, configuration)
 - **Automatically create backups** at scheduled times
 - **Restore the system** on the same or new server
 - **Securely store** backups in the cloud or locally
+- **Automatically detects** whether you're running Control Panel or Engine
 
-## 🚀 Quick Start
+## � Installation
 
-### Step 1: Installation
+### Download the Script
+
+```bash
+wget -P /opt/panelalpha/ https://raw.githubusercontent.com/panelalpha/PanelAlpha-Snapshot-Tool/main/pasnap.sh
+chmod +x /opt/panelalpha/pasnap.sh
+```
+
+## �🚀 Quick Start
+
+### Step 1: Install Dependencies
 
 Run in terminal on the server with PanelAlpha:
 
 ```bash
-sudo ./panelalpha-snapshot.sh --install
+sudo ./pasnap.sh --install
 ```
 
 This will install all necessary tools.
@@ -27,7 +39,7 @@ This will install all necessary tools.
 Configure backup storage location:
 
 ```bash
-sudo ./panelalpha-snapshot.sh --setup
+sudo ./pasnap.sh --setup
 ```
 
 The program will guide you through simple step-by-step configuration.
@@ -37,7 +49,7 @@ The program will guide you through simple step-by-step configuration.
 Check if everything works:
 
 ```bash
-sudo ./panelalpha-snapshot.sh --test-connection
+sudo ./pasnap.sh --test-connection
 ```
 
 ### Step 4: First backup
@@ -45,7 +57,7 @@ sudo ./panelalpha-snapshot.sh --test-connection
 Create your first backup:
 
 ```bash
-sudo ./panelalpha-snapshot.sh --snapshot
+sudo ./pasnap.sh --snapshot
 ```
 
 ### Step 5: Automation (optional)
@@ -53,7 +65,7 @@ sudo ./panelalpha-snapshot.sh --snapshot
 Configure automatic backup creation:
 
 ```bash
-sudo ./panelalpha-snapshot.sh --cron install
+sudo ./pasnap.sh --cron install
 ```
 
 ## 📁 Where to store backups?
@@ -72,26 +84,36 @@ sudo ./panelalpha-snapshot.sh --cron install
 - **Moderately safe** - backups on another server
 - **Requires**: SSH access to another server
 
-## 🔧 Basic Commands
+## � Application Type Detection
+
+The tool automatically detects whether you're using:
+- **PanelAlpha Control Panel** (installed in `/opt/panelalpha/app`)
+  - Backs up: API database, Matomo database, api-storage, redis-data
+- **PanelAlpha Engine** (installed in `/opt/panelalpha/engine`)
+  - Backs up: Core database, Users databases, core-storage
+
+No manual configuration needed - the tool handles everything automatically!
+
+## �🔧 Basic Commands
 
 ```bash
-# Create backup
-sudo ./panelalpha-snapshot.sh --snapshot
+# Create backup (works for both Control Panel and Engine)
+sudo ./pasnap.sh --snapshot
 
 # View available backups
-sudo ./panelalpha-snapshot.sh --list-snapshots
+sudo ./pasnap.sh --list-snapshots
 
 # Restore from latest backup
-sudo ./panelalpha-snapshot.sh --restore latest
+sudo ./pasnap.sh --restore latest
 
 # Restore from specific backup (replace a1b2c3d4 with actual ID)
-sudo ./panelalpha-snapshot.sh --restore a1b2c3d4
+sudo ./pasnap.sh --restore a1b2c3d4
 
 # Delete old backup
-sudo ./panelalpha-snapshot.sh --delete-snapshots a1b2c3d4
+sudo ./pasnap.sh --delete-snapshots a1b2c3d4
 
 # Check automatic backup status
-sudo ./panelalpha-snapshot.sh --cron status
+sudo ./pasnap.sh --cron status
 ```
 
 ## 🏠 Restoring on the same server
@@ -100,17 +122,17 @@ If you have problems with PanelAlpha and want to restore a previous state:
 
 1. **View available backups**:
    ```bash
-   sudo ./panelalpha-snapshot.sh --list-snapshots
+   sudo ./pasnap.sh --list-snapshots
    ```
 
 2. **Restore from selected backup**:
    ```bash
-   sudo ./panelalpha-snapshot.sh --restore a1b2c3d4
+   sudo ./pasnap.sh --restore a1b2c3d4
    ```
 
 3. **Or restore the latest backup**:
    ```bash
-   sudo ./panelalpha-snapshot.sh --restore latest
+   sudo ./pasnap.sh --restore latest
    ```
 
 ⚠️ **WARNING**: Restoration will replace all current data!
@@ -122,7 +144,7 @@ Moving PanelAlpha to a new server:
 ### On the old server:
 1. **Create backup**:
    ```bash
-   sudo ./panelalpha-snapshot.sh --snapshot
+   sudo ./pasnap.sh --snapshot
    ```
 
 2. **Save backup ID** from command output
@@ -132,34 +154,34 @@ Moving PanelAlpha to a new server:
 
 2. **Copy snapshot tool** and install:
    ```bash
-   sudo ./panelalpha-snapshot.sh --install
+   sudo ./pasnap.sh --install
    ```
 
 3. **Configure** (use the same settings as on the old server):
    ```bash
-   sudo ./panelalpha-snapshot.sh --setup
+   sudo ./pasnap.sh --setup
    ```
 
 4. **Restore backup**:
    ```bash
-   sudo ./panelalpha-snapshot.sh --restore a1b2c3d4
+   sudo ./pasnap.sh --restore a1b2c3d4
    ```
 
 ## 🤖 Automatic backups
 
 ### Enable automation:
 ```bash
-sudo ./panelalpha-snapshot.sh --cron install
+sudo ./pasnap.sh --cron install
 ```
 
 ### Check status:
 ```bash
-sudo ./panelalpha-snapshot.sh --cron status
+sudo ./pasnap.sh --cron status
 ```
 
 ### Disable automation:
 ```bash
-sudo ./panelalpha-snapshot.sh --cron remove
+sudo ./pasnap.sh --cron remove
 ```
 
 ## 📊 What is saved in backup?
@@ -184,7 +206,7 @@ sudo ./panelalpha-snapshot.sh --cron remove
 ### 🔐 "Permission denied"
 ```bash
 # Always run with sudo
-sudo ./panelalpha-snapshot.sh --snapshot
+sudo ./pasnap.sh --snapshot
 ```
 
 ### 🐳 "Docker not working"
@@ -197,7 +219,7 @@ sudo systemctl enable docker
 ### 🌐 "Cannot connect to repository"
 ```bash
 # Check configuration
-sudo ./panelalpha-snapshot.sh --test-connection
+sudo ./pasnap.sh --test-connection
 
 # Edit configuration if needed
 sudo nano /opt/panelalpha/app/.env-backup
@@ -209,13 +231,13 @@ sudo nano /opt/panelalpha/app/.env-backup
 df -h
 
 # Delete old backups
-sudo ./panelalpha-snapshot.sh --delete-snapshots old-snapshot-id
+sudo ./pasnap.sh --delete-snapshots old-snapshot-id
 ```
 
 ### 🔍 "Database error"
 1. Check if PanelAlpha is running: `docker compose ps`
 2. Check passwords in `.env` file
-3. Check logs: `sudo tail -f /var/log/panelalpha-snapshot.log`
+3. Check logs: `sudo tail -f /var/log/pasnap.log`
 
 ## 📋 System Requirements
 
@@ -230,15 +252,15 @@ sudo ./panelalpha-snapshot.sh --delete-snapshots old-snapshot-id
 ### Check logs:
 ```bash
 # Recent operations
-sudo tail -f /var/log/panelalpha-snapshot.log
+sudo tail -f /var/log/pasnap.log
 
 # Search for errors
-sudo grep ERROR /var/log/panelalpha-snapshot.log
+sudo grep ERROR /var/log/pasnap.log
 ```
 
 ### Check automatic backup activity:
 ```bash
-sudo ./panelalpha-snapshot.sh --cron status
+sudo ./pasnap.sh --cron status
 ```
 
 ## 🆘 Help
@@ -247,7 +269,7 @@ If you have problems:
 
 1. **Check logs** for errors
 2. **Verify system requirements**
-3. **Run connection test**: `sudo ./panelalpha-snapshot.sh --test-connection`
+3. **Run connection test**: `sudo ./pasnap.sh --test-connection`
 4. **Contact your system administrator**
 
 ## 🔐 Security
@@ -283,7 +305,7 @@ If you have problems:
 ### Local Storage
 ```bash
 Repository type: local
-Example: /backup/panelalpha-snapshots
+Example: /backup/pasnap-snapshots
 ```
 - Best for: Development, testing, local backups
 - Pros: Fast, simple setup
@@ -302,7 +324,7 @@ Example: sftp:backup-user@backup.example.com:/backups/panelalpha
 ```bash
 Repository type: s3
 Supports: AWS S3, Hetzner Storage, MinIO, DigitalOcean Spaces
-Example: s3:s3.eu-west-1.amazonaws.com/my-bucket/panelalpha-snapshots
+Example: s3:s3.eu-west-1.amazonaws.com/my-bucket/pasnap-snapshots
 ```
 - Best for: Production environments, scalable storage
 - Pros: Highly available, scalable, cost-effective
@@ -314,13 +336,13 @@ Example: s3:s3.eu-west-1.amazonaws.com/my-bucket/panelalpha-snapshots
 
 ```bash
 # Create a one-time snapshot
-sudo ./panelalpha-snapshot.sh --snapshot
+sudo ./pasnap.sh --snapshot
 
 # List all available snapshots
-sudo ./panelalpha-snapshot.sh --list-snapshots
+sudo ./pasnap.sh --list-snapshots
 
 # Delete a specific snapshot
-sudo ./panelalpha-snapshot.sh --delete-snapshots a1b2c3d4
+sudo ./pasnap.sh --delete-snapshots a1b2c3d4
 ```
 
 ### Restore Operations
@@ -328,30 +350,30 @@ sudo ./panelalpha-snapshot.sh --delete-snapshots a1b2c3d4
 #### Same Server Restore
 ```bash
 # Restore from latest snapshot
-sudo ./panelalpha-snapshot.sh --restore latest
+sudo ./pasnap.sh --restore latest
 
 # Restore from specific snapshot
-sudo ./panelalpha-snapshot.sh --restore a1b2c3d4
+sudo ./pasnap.sh --restore a1b2c3d4
 ```
 
 #### New Server Migration
 1. **Install PanelAlpha** on the new server (basic installation)
 2. **Install snapshot tool**:
    ```bash
-   # Copy panelalpha-snapshot.sh to new server
-   sudo ./panelalpha-snapshot.sh --install
+   # Copy pasnap.sh to new server
+   sudo ./pasnap.sh --install
    ```
 3. **Configure repository** (use same settings as source):
    ```bash
-   sudo ./panelalpha-snapshot.sh --setup
+   sudo ./pasnap.sh --setup
    ```
 4. **Test connection**:
    ```bash
-   sudo ./panelalpha-snapshot.sh --test-connection
+   sudo ./pasnap.sh --test-connection
    ```
 5. **Restore from snapshot**:
    ```bash
-   sudo ./panelalpha-snapshot.sh --restore a1b2c3d4
+   sudo ./pasnap.sh --restore a1b2c3d4
    ```
 
 The restore process automatically:
@@ -365,13 +387,13 @@ The restore process automatically:
 
 ```bash
 # Install automatic daily snapshots
-sudo ./panelalpha-snapshot.sh --cron install
+sudo ./pasnap.sh --cron install
 
 # Check automation status
-sudo ./panelalpha-snapshot.sh --cron status
+sudo ./pasnap.sh --cron status
 
 # Remove automatic snapshots
-sudo ./panelalpha-snapshot.sh --cron remove
+sudo ./pasnap.sh --cron remove
 ```
 
 ## Configuration
@@ -380,7 +402,7 @@ Configuration is stored in `/opt/panelalpha/app/.env-backup`:
 
 ```bash
 # Repository settings
-RESTIC_REPOSITORY="s3:s3.eu-west-1.amazonaws.com/my-bucket/panelalpha-snapshots"
+RESTIC_REPOSITORY="s3:s3.eu-west-1.amazonaws.com/my-bucket/pasnap-snapshots"
 RESTIC_PASSWORD="your-encryption-password"
 
 # S3 credentials (if applicable)
@@ -393,7 +415,7 @@ BACKUP_HOUR=2
 BACKUP_TAG_PREFIX="panelalpha"
 
 # System paths
-LOG_FILE="/var/log/panelalpha-snapshot.log"
+LOG_FILE="/var/log/pasnap.log"
 BACKUP_TEMP_DIR="/var/tmp"
 RESTIC_CACHE_DIR="/var/cache/restic"
 ```
@@ -412,7 +434,7 @@ RESTIC_CACHE_DIR="/var/cache/restic"
 1. **Permission Denied**:
    ```bash
    # Ensure running as root
-   sudo ./panelalpha-snapshot.sh --snapshot
+   sudo ./pasnap.sh --snapshot
    ```
 
 2. **Docker Not Running**:
@@ -424,7 +446,7 @@ RESTIC_CACHE_DIR="/var/cache/restic"
 3. **Repository Connection Failed**:
    ```bash
    # Test connection
-   sudo ./panelalpha-snapshot.sh --test-connection
+   sudo ./pasnap.sh --test-connection
    
    # Verify credentials in configuration file
    sudo nano /opt/panelalpha/app/.env-backup
@@ -436,17 +458,17 @@ RESTIC_CACHE_DIR="/var/cache/restic"
    df -h /var/tmp
    
    # Clean up old snapshots
-   sudo ./panelalpha-snapshot.sh --delete-snapshots old-snapshot-id
+   sudo ./pasnap.sh --delete-snapshots old-snapshot-id
    ```
 
 ### Log Files
 
-Monitor operations in `/var/log/panelalpha-snapshot.log`:
+Monitor operations in `/var/log/pasnap.log`:
 
 ```bash
 # View recent activity
-sudo tail -f /var/log/panelalpha-snapshot.log
+sudo tail -f /var/log/pasnap.log
 
 # Search for errors
-sudo grep ERROR /var/log/panelalpha-snapshot.log
+sudo grep ERROR /var/log/pasnap.log
 ```
