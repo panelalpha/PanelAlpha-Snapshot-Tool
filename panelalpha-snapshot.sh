@@ -10,11 +10,38 @@ set -euo pipefail
 # CONFIGURATION CONSTANTS
 # ======================
 
-readonly SCRIPT_VERSION="1.1"
+readonly SCRIPT_VERSION="1.2"
 readonly SCRIPT_NAME="PanelAlpha Create Snapshot & Restore Script"
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-readonly PANELALPHA_DIR="/opt/panelalpha/app"
-readonly CONFIG_FILE="${PANELALPHA_DIR}/.env-backup"
+
+# Detect PanelAlpha installation type and set paths accordingly
+detect_panelalpha_type() {
+    if [[ -d "/opt/panelalpha/engine" && -f "/opt/panelalpha/engine/docker-compose.yml" ]]; then
+        echo "engine"
+    elif [[ -d "/opt/panelalpha/app" && -f "/opt/panelalpha/app/docker-compose.yml" ]]; then
+        echo "app"
+    else
+        echo "unknown"
+    fi
+}
+
+readonly PANELALPHA_APP_TYPE="$(detect_panelalpha_type)"
+
+# Set paths based on application type
+if [[ "$PANELALPHA_APP_TYPE" == "engine" ]]; then
+    readonly PANELALPHA_DIR="/opt/panelalpha/engine"
+    readonly CONFIG_FILE="${PANELALPHA_DIR}/.env-backup"
+    readonly ENV_FILE="${PANELALPHA_DIR}/.env-core"
+elif [[ "$PANELALPHA_APP_TYPE" == "app" ]]; then
+    readonly PANELALPHA_DIR="/opt/panelalpha/app"
+    readonly CONFIG_FILE="${PANELALPHA_DIR}/.env-backup"
+    readonly ENV_FILE="${PANELALPHA_DIR}/.env"
+else
+    # Default to app for backward compatibility
+    readonly PANELALPHA_DIR="/opt/panelalpha/app"
+    readonly CONFIG_FILE="${PANELALPHA_DIR}/.env-backup"
+    readonly ENV_FILE="${PANELALPHA_DIR}/.env"
+fi
 
 # Security constants
 readonly MYSQL_TIMEOUT=30
@@ -224,6 +251,7 @@ load_configuration
 show_help() {
     cat << EOF
 $SCRIPT_NAME v$SCRIPT_VERSION
+Supports both PanelAlpha Control Panel and Engine
 
 🚀 USAGE: $0 [option]
 
@@ -282,7 +310,20 @@ EOF
 show_version() {
     echo "🚀 $SCRIPT_NAME v$SCRIPT_VERSION"
     echo "Professional solution for creating snapshots and restoring PanelAlpha"
+    echo "Supports both Control Panel and Engine"
     echo "Uses Restic for secure, incremental backups"
+    echo ""
+    echo "📋 DETECTED APPLICATION:"
+    if [[ "$PANELALPHA_APP_TYPE" == "engine" ]]; then
+        echo "  - Type: PanelAlpha Engine"
+        echo "  - Path: $PANELALPHA_DIR"
+    elif [[ "$PANELALPHA_APP_TYPE" == "app" ]]; then
+        echo "  - Type: PanelAlpha Control Panel"
+        echo "  - Path: $PANELALPHA_DIR"
+    else
+        echo "  - Type: Not detected (will use default: Control Panel)"
+        echo "  - Path: $PANELALPHA_DIR"
+    fi
     echo ""
     echo "📋 COMPONENTS:"
     echo "  - Snapshot tool: $SCRIPT_VERSION"
@@ -298,7 +339,7 @@ show_version() {
     echo "  - Kernel: $(uname -r)"
     echo "  - Architecture: $(uname -m)"
     echo ""
-    echo "Copyright (c) $(date +%Y) - Open Source License"
+    echo "Copyright (c) $(date +%Y) - Apache-2.0 license"
     echo "More information in README.md file"
 }
 
@@ -883,115 +924,235 @@ create_database_snapshot() {
 
     cd "$PANELALPHA_DIR"
 
-    # Extract database passwords from environment file securely
-    local api_password
-    local matomo_password
-    api_password=$(grep "^API_MYSQL_PASSWORD=" .env 2>/dev/null | cut -d'=' -f2 | tr -d '"' | head -1 || echo "")
-    matomo_password=$(grep "^MATOMO_MYSQL_PASSWORD=" .env 2>/dev/null | cut -d'=' -f2 | tr -d '"' | head -1 || echo "")
-
     local snapshot_success=true
-    local total_steps=2
-    local current_step=0
 
-    # Snapshot PanelAlpha database
-    if [[ -n "$api_password" ]]; then
-        ((current_step++))
-        show_progress $current_step $total_steps "Creating PanelAlpha database snapshot"
+    # Handle different database configurations based on application type
+    if [[ "$PANELALPHA_APP_TYPE" == "engine" ]]; then
+        log INFO "Detected PanelAlpha Engine - backing up core and users databases"
         
-        local api_container
-        api_container=$(docker compose ps -q database-api 2>/dev/null)
+        # Extract database passwords from environment file securely
+        local core_password
+        local users_password
+        core_password=$(grep "^CORE_MYSQL_PASSWORD=" "$ENV_FILE" 2>/dev/null | cut -d'=' -f2 | tr -d '"' | head -1 || echo "")
+        users_password=$(grep "^USERS_MYSQL_ROOT_PASSWORD=" "$ENV_FILE" 2>/dev/null | cut -d'=' -f2 | tr -d '"' | head -1 || echo "")
 
-        if [[ -z "$api_container" ]]; then
-            log ERROR "API database container not found"
-            snapshot_success=false
-        else
-            # Test database connectivity with timeout
-            if timeout "$MYSQL_TIMEOUT" docker exec "$api_container" mysql -u panelalpha -p"$api_password" -e "SELECT 1;" >/dev/null 2>&1; then
-                log DEBUG "API database connection verified"
+        local total_steps=2
+        local current_step=0
 
-                # Create database dump with enhanced options and error checking
-                local dump_file="$snapshot_dir/databases/panelalpha-api.sql"
-                if timeout 300 docker exec "$api_container" \
-                    mysqldump -u panelalpha -p"$api_password" panelalpha \
-                    --single-transaction --routines --triggers --lock-tables=false \
-                    --add-drop-database --create-options --disable-keys \
-                    --extended-insert --quick --set-charset \
-                    > "$dump_file" 2>/dev/null; then
+        # Snapshot Core database
+        if [[ -n "$core_password" ]]; then
+            ((current_step++))
+            show_progress $current_step $total_steps "Creating Core database snapshot"
+            
+            local core_container
+            core_container=$(docker compose ps -q database-core 2>/dev/null)
 
-                    # Verify snapshot file integrity
-                    if verify_file_integrity "$dump_file" 1000; then
-                        local api_size
-                        api_size=$(stat -c%s "$dump_file" 2>/dev/null || echo "0")
-                        log INFO "✓ PanelAlpha database snapshot created ($(( api_size / 1024 )) KB)"
+            if [[ -z "$core_container" ]]; then
+                log ERROR "Core database container not found"
+                snapshot_success=false
+            else
+                # Test database connectivity with timeout
+                if timeout "$MYSQL_TIMEOUT" docker exec "$core_container" mysql -u core -p"$core_password" -e "SELECT 1;" >/dev/null 2>&1; then
+                    log DEBUG "Core database connection verified"
+
+                    # Create database dump with enhanced options and error checking
+                    local dump_file="$snapshot_dir/databases/panelalpha-core.sql"
+                    if timeout 300 docker exec "$core_container" \
+                        mysqldump -u core -p"$core_password" core \
+                        --single-transaction --routines --triggers --lock-tables=false \
+                        --add-drop-database --create-options --disable-keys \
+                        --extended-insert --quick --set-charset \
+                        > "$dump_file" 2>/dev/null; then
+
+                        # Verify snapshot file integrity
+                        if verify_file_integrity "$dump_file" 1000; then
+                            local core_size
+                            core_size=$(stat -c%s "$dump_file" 2>/dev/null || echo "0")
+                            log INFO "✓ Core database snapshot created ($(( core_size / 1024 )) KB)"
+                        else
+                            log ERROR "✗ Core database snapshot is corrupted"
+                            snapshot_success=false
+                        fi
                     else
-                        log ERROR "✗ PanelAlpha database snapshot is corrupted"
+                        log ERROR "✗ Core database snapshot failed"
                         snapshot_success=false
                     fi
                 else
-                    log ERROR "✗ PanelAlpha database snapshot failed"
+                    log ERROR "✗ Cannot connect to Core database"
+                    log ERROR "Check database password in $ENV_FILE file"
                     snapshot_success=false
                 fi
-            else
-                log ERROR "✗ Cannot connect to PanelAlpha database"
-                log ERROR "Check database password in .env file"
-                snapshot_success=false
             fi
+        else
+            log WARN "CORE_MYSQL_PASSWORD not found - skipping Core database"
+            current_step=$total_steps
         fi
-    else
-        log WARN "API_MYSQL_PASSWORD not found - skipping PanelAlpha database"
-        current_step=$total_steps  # Skip progress for this step
-    fi
 
-    # Snapshot Matomo database
-    if [[ -n "$matomo_password" ]]; then
+        # Snapshot Users database (all databases from users container)
+        if [[ -n "$users_password" ]]; then
+            if [[ -n "$core_password" ]]; then
+                ((current_step++))
+            else
+                current_step=$total_steps
+            fi
+            show_progress $current_step $total_steps "Creating Users databases snapshot"
+            
+            local users_container
+            users_container=$(docker compose ps -q database-users 2>/dev/null)
+
+            if [[ -z "$users_container" ]]; then
+                log ERROR "Users database container not found"
+                snapshot_success=false
+            else
+                # Test database connectivity with timeout
+                if timeout "$MYSQL_TIMEOUT" docker exec "$users_container" mysql -u root -p"$users_password" -e "SELECT 1;" >/dev/null 2>&1; then
+                    log DEBUG "Users database connection verified"
+
+                    # Create database dump (all databases)
+                    local dump_file="$snapshot_dir/databases/panelalpha-users.sql"
+                    if timeout 300 docker exec "$users_container" \
+                        mysqldump -u root -p"$users_password" --all-databases \
+                        --single-transaction --routines --triggers --lock-tables=false \
+                        --add-drop-database --create-options --disable-keys \
+                        --extended-insert --quick --set-charset \
+                        > "$dump_file" 2>/dev/null; then
+
+                        # Verify snapshot file integrity
+                        if verify_file_integrity "$dump_file" 1000; then
+                            local users_size
+                            users_size=$(stat -c%s "$dump_file" 2>/dev/null || echo "0")
+                            log INFO "✓ Users databases snapshot created ($(( users_size / 1024 )) KB)"
+                        else
+                            log ERROR "✗ Users databases snapshot is corrupted"
+                            snapshot_success=false
+                        fi
+                    else
+                        log ERROR "✗ Users databases snapshot failed"
+                        snapshot_success=false
+                    fi
+                else
+                    log ERROR "✗ Cannot connect to Users database"
+                    log ERROR "Check database password in $ENV_FILE file"
+                    snapshot_success=false
+                fi
+            fi
+        else
+            log WARN "USERS_MYSQL_ROOT_PASSWORD not found - skipping Users databases"
+        fi
+        
+    else
+        # Original Control Panel logic
+        log INFO "Detected PanelAlpha Control Panel - backing up API and Matomo databases"
+        
+        # Extract database passwords from environment file securely
+        local api_password
+        local matomo_password
+        api_password=$(grep "^API_MYSQL_PASSWORD=" "$ENV_FILE" 2>/dev/null | cut -d'=' -f2 | tr -d '"' | head -1 || echo "")
+        matomo_password=$(grep "^MATOMO_MYSQL_PASSWORD=" "$ENV_FILE" 2>/dev/null | cut -d'=' -f2 | tr -d '"' | head -1 || echo "")
+
+        local total_steps=2
+        local current_step=0
+
+        # Snapshot PanelAlpha database
         if [[ -n "$api_password" ]]; then
             ((current_step++))
-        else
-            current_step=$total_steps  # If API was skipped, this is the only step
-        fi
-        show_progress $current_step $total_steps "Creating Matomo database snapshot"
-        
-        local matomo_container
-        matomo_container=$(docker compose ps -q database-matomo 2>/dev/null)
+            show_progress $current_step $total_steps "Creating PanelAlpha database snapshot"
+            
+            local api_container
+            api_container=$(docker compose ps -q database-api 2>/dev/null)
 
-        if [[ -z "$matomo_container" ]]; then
-            log ERROR "Matomo database container not found"
-            snapshot_success=false
-        else
-            # Test database connectivity with timeout
-            if timeout "$MYSQL_TIMEOUT" docker exec "$matomo_container" mysql -u matomo -p"$matomo_password" -e "SELECT 1;" >/dev/null 2>&1; then
-                log DEBUG "Matomo database connection verified"
+            if [[ -z "$api_container" ]]; then
+                log ERROR "API database container not found"
+                snapshot_success=false
+            else
+                # Test database connectivity with timeout
+                if timeout "$MYSQL_TIMEOUT" docker exec "$api_container" mysql -u panelalpha -p"$api_password" -e "SELECT 1;" >/dev/null 2>&1; then
+                    log DEBUG "API database connection verified"
 
-                # Create database dump
-                local dump_file="$snapshot_dir/databases/matomo.sql"
-                if timeout 300 docker exec "$matomo_container" \
-                    mysqldump -u matomo -p"$matomo_password" matomo \
-                    --single-transaction --routines --triggers --lock-tables=false \
-                    --add-drop-database --create-options --disable-keys \
-                    --extended-insert --quick --set-charset \
-                    > "$dump_file" 2>/dev/null; then
+                    # Create database dump with enhanced options and error checking
+                    local dump_file="$snapshot_dir/databases/panelalpha-api.sql"
+                    if timeout 300 docker exec "$api_container" \
+                        mysqldump -u panelalpha -p"$api_password" panelalpha \
+                        --single-transaction --routines --triggers --lock-tables=false \
+                        --add-drop-database --create-options --disable-keys \
+                        --extended-insert --quick --set-charset \
+                        > "$dump_file" 2>/dev/null; then
 
-                    # Verify snapshot file integrity
-                    if verify_file_integrity "$dump_file" 1000; then
-                        local matomo_size
-                        matomo_size=$(stat -c%s "$dump_file" 2>/dev/null || echo "0")
-                        log INFO "✓ Matomo database snapshot created ($(( matomo_size / 1024 )) KB)"
+                        # Verify snapshot file integrity
+                        if verify_file_integrity "$dump_file" 1000; then
+                            local api_size
+                            api_size=$(stat -c%s "$dump_file" 2>/dev/null || echo "0")
+                            log INFO "✓ PanelAlpha database snapshot created ($(( api_size / 1024 )) KB)"
+                        else
+                            log ERROR "✗ PanelAlpha database snapshot is corrupted"
+                            snapshot_success=false
+                        fi
                     else
-                        log ERROR "✗ Matomo database snapshot is corrupted"
+                        log ERROR "✗ PanelAlpha database snapshot failed"
                         snapshot_success=false
                     fi
                 else
-                    log ERROR "✗ Matomo database snapshot failed"
+                    log ERROR "✗ Cannot connect to PanelAlpha database"
+                    log ERROR "Check database password in $ENV_FILE file"
                     snapshot_success=false
                 fi
-            else
-                log ERROR "✗ Cannot connect to Matomo database"
-                log ERROR "Check database password in .env file"
-                snapshot_success=false
             fi
+        else
+            log WARN "API_MYSQL_PASSWORD not found - skipping PanelAlpha database"
+            current_step=$total_steps  # Skip progress for this step
         fi
-    else
-        log WARN "MATOMO_MYSQL_PASSWORD not found - skipping Matomo database"
+
+        # Snapshot Matomo database
+        if [[ -n "$matomo_password" ]]; then
+            if [[ -n "$api_password" ]]; then
+                ((current_step++))
+            else
+                current_step=$total_steps  # If API was skipped, this is the only step
+            fi
+            show_progress $current_step $total_steps "Creating Matomo database snapshot"
+            
+            local matomo_container
+            matomo_container=$(docker compose ps -q database-matomo 2>/dev/null)
+
+            if [[ -z "$matomo_container" ]]; then
+                log ERROR "Matomo database container not found"
+                snapshot_success=false
+            else
+                # Test database connectivity with timeout
+                if timeout "$MYSQL_TIMEOUT" docker exec "$matomo_container" mysql -u matomo -p"$matomo_password" -e "SELECT 1;" >/dev/null 2>&1; then
+                    log DEBUG "Matomo database connection verified"
+
+                    # Create database dump
+                    local dump_file="$snapshot_dir/databases/matomo.sql"
+                    if timeout 300 docker exec "$matomo_container" \
+                        mysqldump -u matomo -p"$matomo_password" matomo \
+                        --single-transaction --routines --triggers --lock-tables=false \
+                        --add-drop-database --create-options --disable-keys \
+                        --extended-insert --quick --set-charset \
+                        > "$dump_file" 2>/dev/null; then
+
+                        # Verify snapshot file integrity
+                        if verify_file_integrity "$dump_file" 1000; then
+                            local matomo_size
+                            matomo_size=$(stat -c%s "$dump_file" 2>/dev/null || echo "0")
+                            log INFO "✓ Matomo database snapshot created ($(( matomo_size / 1024 )) KB)"
+                        else
+                            log ERROR "✗ Matomo database snapshot is corrupted"
+                            snapshot_success=false
+                        fi
+                    else
+                        log ERROR "✗ Matomo database snapshot failed"
+                        snapshot_success=false
+                    fi
+                else
+                    log ERROR "✗ Cannot connect to Matomo database"
+                    log ERROR "Check database password in $ENV_FILE file"
+                    snapshot_success=false
+                fi
+            fi
+        else
+            log WARN "MATOMO_MYSQL_PASSWORD not found - skipping Matomo database"
+        fi
     fi
 
     # Final verification and summary
@@ -1002,15 +1163,28 @@ create_database_snapshot() {
 
         # Log database verification info
         log DEBUG "Database snapshot verification:"
-        if [[ -f "$snapshot_dir/databases/panelalpha-api.sql" ]]; then
-            local api_lines
-            api_lines=$(wc -l < "$snapshot_dir/databases/panelalpha-api.sql" 2>/dev/null || echo "0")
-            log DEBUG "  PanelAlpha: $api_lines lines"
-        fi
-        if [[ -f "$snapshot_dir/databases/matomo.sql" ]]; then
-            local matomo_lines
-            matomo_lines=$(wc -l < "$snapshot_dir/databases/matomo.sql" 2>/dev/null || echo "0")
-            log DEBUG "  Matomo: $matomo_lines lines"
+        if [[ "$PANELALPHA_APP_TYPE" == "engine" ]]; then
+            if [[ -f "$snapshot_dir/databases/panelalpha-core.sql" ]]; then
+                local core_lines
+                core_lines=$(wc -l < "$snapshot_dir/databases/panelalpha-core.sql" 2>/dev/null || echo "0")
+                log DEBUG "  Core: $core_lines lines"
+            fi
+            if [[ -f "$snapshot_dir/databases/panelalpha-users.sql" ]]; then
+                local users_lines
+                users_lines=$(wc -l < "$snapshot_dir/databases/panelalpha-users.sql" 2>/dev/null || echo "0")
+                log DEBUG "  Users: $users_lines lines"
+            fi
+        else
+            if [[ -f "$snapshot_dir/databases/panelalpha-api.sql" ]]; then
+                local api_lines
+                api_lines=$(wc -l < "$snapshot_dir/databases/panelalpha-api.sql" 2>/dev/null || echo "0")
+                log DEBUG "  PanelAlpha: $api_lines lines"
+            fi
+            if [[ -f "$snapshot_dir/databases/matomo.sql" ]]; then
+                local matomo_lines
+                matomo_lines=$(wc -l < "$snapshot_dir/databases/matomo.sql" 2>/dev/null || echo "0")
+                log DEBUG "  Matomo: $matomo_lines lines"
+            fi
         fi
         
         return 0
@@ -1029,14 +1203,25 @@ create_volumes_snapshot() {
 
     cd "$PANELALPHA_DIR"
 
-    # Define critical volumes for PanelAlpha
-    local volumes=(
-        "api-storage"
-        "database-api-data"
-        "database-matomo-data"
-        "redis-data"
-        "matomo"
-    )
+    # Define critical volumes based on application type
+    local volumes=()
+    if [[ "$PANELALPHA_APP_TYPE" == "engine" ]]; then
+        log INFO "Using Engine volume configuration"
+        volumes=(
+            "core-storage"
+            "database-core-data"
+            "database-users-data"
+        )
+    else
+        log INFO "Using Control Panel volume configuration"
+        volumes=(
+            "api-storage"
+            "database-api-data"
+            "database-matomo-data"
+            "redis-data"
+            "matomo"
+        )
+    fi
 
     local volumes_processed=0
     local volumes_total=${#volumes[@]}
@@ -1114,11 +1299,17 @@ create_config_snapshot() {
     # Snapshot core configuration files
     local config_files=(
         "docker-compose.yml"
-        ".env"
         ".env-backup"
         "nginx.conf"
         "Dockerfile"
     )
+    
+    # Add environment file based on application type
+    if [[ "$PANELALPHA_APP_TYPE" == "engine" ]]; then
+        config_files+=(".env-core")
+    else
+        config_files+=(".env")
+    fi
 
     for file in "${config_files[@]}"; do
         if [[ -f "$file" ]]; then
@@ -1339,11 +1530,18 @@ Tag: $BACKUP_TAG
 
 System Information:
 $server_info
+Application Type: $PANELALPHA_APP_TYPE
 
 Components Included:
-- Databases (PanelAlpha API, Matomo)
-- Docker volumes (api-storage, database-api-data, database-matomo-data, redis-data, matomo)
-- Configuration files (docker-compose.yml, .env, packages/, SSL certificates)
+$(if [[ "$PANELALPHA_APP_TYPE" == "engine" ]]; then
+    echo "- Databases (Core, Users)"
+    echo "- Docker volumes (core-storage, database-core-data, database-users-data)"
+    echo "- Configuration files (docker-compose.yml, .env-core, packages/, SSL certificates)"
+else
+    echo "- Databases (PanelAlpha API, Matomo)"
+    echo "- Docker volumes (api-storage, database-api-data, database-matomo-data, redis-data, matomo)"
+    echo "- Configuration files (docker-compose.yml, .env, packages/, SSL certificates)"
+fi)
 
 Verification:
 - Database dumps verified for minimum size
@@ -1496,10 +1694,21 @@ restore_snapshot() {
 wait_for_database_containers_enhanced() {
     log INFO "Waiting for database containers to be ready..."
 
-    local api_container=$(docker compose ps -q database-api)
-    local matomo_container=$(docker compose ps -q database-matomo)
+    local container1 container2 name1 name2
+    
+    if [[ "$PANELALPHA_APP_TYPE" == "engine" ]]; then
+        container1=$(docker compose ps -q database-core)
+        container2=$(docker compose ps -q database-users)
+        name1="Core"
+        name2="Users"
+    else
+        container1=$(docker compose ps -q database-api)
+        container2=$(docker compose ps -q database-matomo)
+        name1="API"
+        name2="Matomo"
+    fi
 
-    if [[ -z "$api_container" || -z "$matomo_container" ]]; then
+    if [[ -z "$container1" || -z "$container2" ]]; then
         log ERROR "One or both database containers are not running"
         return 1
     fi
@@ -1510,26 +1719,26 @@ wait_for_database_containers_enhanced() {
     log INFO "Checking if MySQL/MariaDB processes are running and ready to accept connections..."
 
     while [[ $attempt -lt $max_attempts ]]; do
-        local api_ready=false
-        local matomo_ready=false
+        local db1_ready=false
+        local db2_ready=false
 
-        # Check API database - just basic MySQL connectivity without authentication
-        if docker exec "$api_container" mysqladmin ping --silent 2>/dev/null; then
-            log DEBUG "API database is responding to ping"
-            api_ready=true
+        # Check first database - just basic MySQL connectivity without authentication
+        if docker exec "$container1" mysqladmin ping --silent 2>/dev/null; then
+            log DEBUG "$name1 database is responding to ping"
+            db1_ready=true
         else
-            log DEBUG "API database not ready yet"
+            log DEBUG "$name1 database not ready yet"
         fi
 
-        # Check Matomo database
-        if docker exec "$matomo_container" mysqladmin ping --silent 2>/dev/null; then
-            log DEBUG "Matomo database is responding to ping"
-            matomo_ready=true
+        # Check second database
+        if docker exec "$container2" mysqladmin ping --silent 2>/dev/null; then
+            log DEBUG "$name2 database is responding to ping"
+            db2_ready=true
         else
-            log DEBUG "Matomo database not ready yet"
+            log DEBUG "$name2 database not ready yet"
         fi
 
-        if [[ "$api_ready" == "true" && "$matomo_ready" == "true" ]]; then
+        if [[ "$db1_ready" == "true" && "$db2_ready" == "true" ]]; then
             log INFO "Both database containers are ready"
             return 0
         fi
@@ -1545,10 +1754,10 @@ wait_for_database_containers_enhanced() {
 
     # Debug information
     log ERROR "Debug information:"
-    log ERROR "API container logs:"
-    docker logs "$api_container" --tail 10 2>/dev/null || true
-    log ERROR "Matomo container logs:"
-    docker logs "$matomo_container" --tail 10 2>/dev/null || true
+    log ERROR "$name1 container logs:"
+    docker logs "$container1" --tail 10 2>/dev/null || true
+    log ERROR "$name2 container logs:"
+    docker logs "$container2" --tail 10 2>/dev/null || true
 
     return 1
 }
@@ -1558,20 +1767,26 @@ clean_database_volumes() {
 
     cd "$PANELALPHA_DIR"
 
-    # Get volume names
-    local api_volume="${PWD##*/}_database-api-data"
-    local matomo_volume="${PWD##*/}_database-matomo-data"
-
-    # Remove API database volume
-    if docker volume inspect "$api_volume" &> /dev/null; then
-        log INFO "Removing API database volume: $api_volume"
-        docker volume rm "$api_volume" 2>/dev/null || log WARN "Could not remove API volume (may not exist)"
+    # Get volume names based on application type
+    local volume1 volume2
+    if [[ "$PANELALPHA_APP_TYPE" == "engine" ]]; then
+        volume1="${PWD##*/}_database-core-data"
+        volume2="${PWD##*/}_database-users-data"
+    else
+        volume1="${PWD##*/}_database-api-data"
+        volume2="${PWD##*/}_database-matomo-data"
     fi
 
-    # Remove Matomo database volume
-    if docker volume inspect "$matomo_volume" &> /dev/null; then
-        log INFO "Removing Matomo database volume: $matomo_volume"
-        docker volume rm "$matomo_volume" 2>/dev/null || log WARN "Could not remove Matomo volume (may not exist)"
+    # Remove first database volume
+    if docker volume inspect "$volume1" &> /dev/null; then
+        log INFO "Removing database volume: $volume1"
+        docker volume rm "$volume1" 2>/dev/null || log WARN "Could not remove volume (may not exist)"
+    fi
+
+    # Remove second database volume
+    if docker volume inspect "$volume2" &> /dev/null; then
+        log INFO "Removing database volume: $volume2"
+        docker volume rm "$volume2" 2>/dev/null || log WARN "Could not remove volume (may not exist)"
     fi
 
     log INFO "Database volumes cleaned"
@@ -1589,9 +1804,9 @@ get_mysql_root_password() {
         root_password=$(docker exec "$container" printenv MARIADB_ROOT_PASSWORD 2>/dev/null || echo "")
     fi
 
-    # If still empty, check the .env file for database passwords
+    # If still empty, check the ENV_FILE for database passwords
     if [[ -z "$root_password" ]]; then
-        root_password=$(grep "^DATABASE_ROOT_PASSWORD=" .env 2>/dev/null | cut -d'=' -f2 | tr -d '"' || echo "")
+        root_password=$(grep "^DATABASE_ROOT_PASSWORD=" "$ENV_FILE" 2>/dev/null | cut -d'=' -f2 | tr -d '"' || echo "")
     fi
 
     echo "$root_password"
@@ -1706,6 +1921,12 @@ restore_single_database() {
                 return 1
             fi
             ;;
+        "core")
+            if ! setup_database_user "$container" "core" "$db_password"; then
+                log ERROR "Failed to setup core user - cannot proceed with restore"
+                return 1
+            fi
+            ;;
     esac
 
     # Drop and recreate database using the database user (not root)
@@ -1755,9 +1976,15 @@ restore_single_database() {
 }
 
 update_system_settings() {
+    # This function is only for Control Panel, skip for Engine
+    if [[ "$PANELALPHA_APP_TYPE" == "engine" ]]; then
+        log INFO "Skipping system settings update (not applicable for Engine)"
+        return 0
+    fi
+
     log INFO "Updating system settings for current server..."
 
-    local api_password=$(grep "^API_MYSQL_PASSWORD=" .env 2>/dev/null | cut -d'=' -f2 | tr -d '"' || echo "")
+    local api_password=$(grep "^API_MYSQL_PASSWORD=" "$ENV_FILE" 2>/dev/null | cut -d'=' -f2 | tr -d '"' || echo "")
 
     if [[ -z "$api_password" ]]; then
         log WARN "Cannot update system settings - API_MYSQL_PASSWORD not found"
@@ -1824,68 +2051,145 @@ restore_databases() {
 
     cd "$PANELALPHA_DIR"
 
-    local api_password=$(grep "^API_MYSQL_PASSWORD=" .env 2>/dev/null | cut -d'=' -f2 | tr -d '"' || echo "")
-    local matomo_password=$(grep "^MATOMO_MYSQL_PASSWORD=" .env 2>/dev/null | cut -d'=' -f2 | tr -d '"' || echo "")
+    if [[ "$PANELALPHA_APP_TYPE" == "engine" ]]; then
+        log INFO "Restoring databases for PanelAlpha Engine"
+        
+        local core_password=$(grep "^CORE_MYSQL_PASSWORD=" "$ENV_FILE" 2>/dev/null | cut -d'=' -f2 | tr -d '"' || echo "")
+        local users_password=$(grep "^USERS_MYSQL_ROOT_PASSWORD=" "$ENV_FILE" 2>/dev/null | cut -d'=' -f2 | tr -d '"' || echo "")
 
-    # Step 1: Completely stop all database containers
-    log INFO "Stopping all database containers for clean restore..."
-    docker compose stop database-api database-matomo 2>/dev/null || true
-    sleep 5
+        # Step 1: Completely stop all database containers
+        log INFO "Stopping all database containers for clean restore..."
+        docker compose stop database-core database-users 2>/dev/null || true
+        sleep 5
 
-    # Step 2: Clean database volumes for fresh start
-    log WARN "Force cleaning database volumes to prevent InnoDB issues..."
-    clean_database_volumes
-
-    # Step 3: Start containers and wait for readiness
-    log INFO "Starting database containers..."
-    docker compose up -d database-api database-matomo
-
-    if ! wait_for_database_containers_enhanced; then
-        log ERROR "Database containers failed to start properly"
-        log INFO "Attempting to clean volumes and restart..."
+        # Step 2: Clean database volumes for fresh start
+        log WARN "Force cleaning database volumes to prevent InnoDB issues..."
         clean_database_volumes
+
+        # Step 3: Start containers and wait for readiness
+        log INFO "Starting database containers..."
+        docker compose up -d database-core database-users
+
+        if ! wait_for_database_containers_enhanced; then
+            log ERROR "Database containers failed to start properly"
+            log INFO "Attempting to clean volumes and restart..."
+            clean_database_volumes
+            docker compose up -d database-core database-users
+
+            if ! wait_for_database_containers_enhanced; then
+                log ERROR "Database containers still not ready after volume cleanup"
+                return 1
+            fi
+        fi
+
+        # Step 4: Restore Core database
+        if [[ -f "$data_dir/databases/panelalpha-core.sql" && -n "$core_password" ]]; then
+            log INFO "Found Core database snapshot and password"
+            if ! restore_single_database "core" "database-core" "$core_password" "$data_dir/databases/panelalpha-core.sql"; then
+                log ERROR "Core database restore failed"
+                return 1
+            fi
+        else
+            if [[ ! -f "$data_dir/databases/panelalpha-core.sql" ]]; then
+                log WARN "Core database snapshot file not found"
+            fi
+            if [[ -z "$core_password" ]]; then
+                log WARN "CORE_MYSQL_PASSWORD not found in $ENV_FILE"
+            fi
+        fi
+
+        # Step 5: Restore Users database
+        if [[ -f "$data_dir/databases/panelalpha-users.sql" && -n "$users_password" ]]; then
+            log INFO "Found Users database snapshot and password"
+            # For users database, we restore all databases as root
+            local users_container=$(docker compose ps -q database-users)
+            if [[ -n "$users_container" ]]; then
+                log INFO "Importing Users databases dump..."
+                if docker exec -i "$users_container" mysql -u root -p"$users_password" < "$data_dir/databases/panelalpha-users.sql" 2>/dev/null; then
+                    log INFO "✓ Users databases imported successfully"
+                else
+                    log ERROR "✗ Users databases import failed"
+                    return 1
+                fi
+            else
+                log ERROR "Users database container not found"
+                return 1
+            fi
+        else
+            if [[ ! -f "$data_dir/databases/panelalpha-users.sql" ]]; then
+                log WARN "Users database snapshot file not found"
+            fi
+            if [[ -z "$users_password" ]]; then
+                log WARN "USERS_MYSQL_ROOT_PASSWORD not found in $ENV_FILE"
+            fi
+        fi
+
+    else
+        log INFO "Restoring databases for PanelAlpha Control Panel"
+        
+        local api_password=$(grep "^API_MYSQL_PASSWORD=" "$ENV_FILE" 2>/dev/null | cut -d'=' -f2 | tr -d '"' || echo "")
+        local matomo_password=$(grep "^MATOMO_MYSQL_PASSWORD=" "$ENV_FILE" 2>/dev/null | cut -d'=' -f2 | tr -d '"' || echo "")
+
+        # Step 1: Completely stop all database containers
+        log INFO "Stopping all database containers for clean restore..."
+        docker compose stop database-api database-matomo 2>/dev/null || true
+        sleep 5
+
+        # Step 2: Clean database volumes for fresh start
+        log WARN "Force cleaning database volumes to prevent InnoDB issues..."
+        clean_database_volumes
+
+        # Step 3: Start containers and wait for readiness
+        log INFO "Starting database containers..."
         docker compose up -d database-api database-matomo
 
         if ! wait_for_database_containers_enhanced; then
-            log ERROR "Database containers still not ready after volume cleanup"
-            return 1
-        fi
-    fi
+            log ERROR "Database containers failed to start properly"
+            log INFO "Attempting to clean volumes and restart..."
+            clean_database_volumes
+            docker compose up -d database-api database-matomo
 
-    # Step 4: Restore PanelAlpha database
-    if [[ -f "$data_dir/databases/panelalpha-api.sql" && -n "$api_password" ]]; then
-        log INFO "Found PanelAlpha database snapshot and password"
-        if ! restore_single_database "panelalpha" "database-api" "$api_password" "$data_dir/databases/panelalpha-api.sql"; then
-            log ERROR "PanelAlpha database restore failed"
-            return 1
+            if ! wait_for_database_containers_enhanced; then
+                log ERROR "Database containers still not ready after volume cleanup"
+                return 1
+            fi
         fi
-    else
-        if [[ ! -f "$data_dir/databases/panelalpha-api.sql" ]]; then
-            log WARN "PanelAlpha database snapshot file not found"
-        fi
-        if [[ -z "$api_password" ]]; then
-            log WARN "API_MYSQL_PASSWORD not found in .env"
-        fi
-    fi
 
-    # Step 5: Restore Matomo database
-    if [[ -f "$data_dir/databases/matomo.sql" && -n "$matomo_password" ]]; then
-        log INFO "Found Matomo database snapshot and password"
-        if ! restore_single_database "matomo" "database-matomo" "$matomo_password" "$data_dir/databases/matomo.sql"; then
-            log ERROR "Matomo database restore failed"
-            return 1
+        # Step 4: Restore PanelAlpha database
+        if [[ -f "$data_dir/databases/panelalpha-api.sql" && -n "$api_password" ]]; then
+            log INFO "Found PanelAlpha database snapshot and password"
+            if ! restore_single_database "panelalpha" "database-api" "$api_password" "$data_dir/databases/panelalpha-api.sql"; then
+                log ERROR "PanelAlpha database restore failed"
+                return 1
+            fi
+        else
+            if [[ ! -f "$data_dir/databases/panelalpha-api.sql" ]]; then
+                log WARN "PanelAlpha database snapshot file not found"
+            fi
+            if [[ -z "$api_password" ]]; then
+                log WARN "API_MYSQL_PASSWORD not found in $ENV_FILE"
+            fi
         fi
-    else
-        if [[ ! -f "$data_dir/databases/matomo.sql" ]]; then
-            log WARN "Matomo database snapshot file not found"
-        fi
-        if [[ -z "$matomo_password" ]]; then
-            log WARN "MATOMO_MYSQL_PASSWORD not found in .env"
-        fi
-    fi
 
-    # Step 6: Update system settings for current server
-    update_system_settings
+        # Step 5: Restore Matomo database
+        if [[ -f "$data_dir/databases/matomo.sql" && -n "$matomo_password" ]]; then
+            log INFO "Found Matomo database snapshot and password"
+            if ! restore_single_database "matomo" "database-matomo" "$matomo_password" "$data_dir/databases/matomo.sql"; then
+                log ERROR "Matomo database restore failed"
+                return 1
+            fi
+        else
+            if [[ ! -f "$data_dir/databases/matomo.sql" ]]; then
+                log WARN "Matomo database snapshot file not found"
+            fi
+            if [[ -z "$matomo_password" ]]; then
+                log WARN "MATOMO_MYSQL_PASSWORD not found in $ENV_FILE"
+            fi
+        fi
+
+        # Step 6: Update system settings for current server
+        update_system_settings
+    fi
 
     # Step 7: Verify database integrity
     verify_database_integrity
@@ -1897,37 +2201,72 @@ restore_databases() {
 verify_database_integrity() {
     log INFO "Verifying database integrity..."
 
-    local api_container=$(docker compose ps -q database-api)
-    local matomo_container=$(docker compose ps -q database-matomo)
+    if [[ "$PANELALPHA_APP_TYPE" == "engine" ]]; then
+        local core_container=$(docker compose ps -q database-core)
+        local users_container=$(docker compose ps -q database-users)
 
-    # Get passwords from .env
-    local api_password=$(grep "^API_MYSQL_PASSWORD=" .env 2>/dev/null | cut -d'=' -f2 | tr -d '"' || echo "")
-    local matomo_password=$(grep "^MATOMO_MYSQL_PASSWORD=" .env 2>/dev/null | cut -d'=' -f2 | tr -d '"' || echo "")
+        # Get passwords from ENV_FILE
+        local core_password=$(grep "^CORE_MYSQL_PASSWORD=" "$ENV_FILE" 2>/dev/null | cut -d'=' -f2 | tr -d '"' || echo "")
+        local users_password=$(grep "^USERS_MYSQL_ROOT_PASSWORD=" "$ENV_FILE" 2>/dev/null | cut -d'=' -f2 | tr -d '"' || echo "")
 
-    # Check API database
-    if [[ -n "$api_container" && -n "$api_password" ]]; then
-        log INFO "Checking PanelAlpha database integrity..."
-        local api_tables=$(docker exec "$api_container" mysql -u panelalpha -p"$api_password" -e "USE panelalpha; SHOW TABLES;" 2>/dev/null | wc -l)
-        if [[ $api_tables -gt 1 ]]; then
-            log INFO "✓ PanelAlpha database integrity OK ($((api_tables-1)) tables)"
+        # Check Core database
+        if [[ -n "$core_container" && -n "$core_password" ]]; then
+            log INFO "Checking Core database integrity..."
+            local core_tables=$(docker exec "$core_container" mysql -u core -p"$core_password" -e "USE core; SHOW TABLES;" 2>/dev/null | wc -l)
+            if [[ $core_tables -gt 1 ]]; then
+                log INFO "✓ Core database integrity OK ($((core_tables-1)) tables)"
+            else
+                log WARN "⚠ Core database may be empty or inaccessible"
+            fi
         else
-            log WARN "⚠ PanelAlpha database may be empty or inaccessible"
+            log WARN "Cannot verify Core database - missing container or password"
+        fi
+
+        # Check Users database
+        if [[ -n "$users_container" && -n "$users_password" ]]; then
+            log INFO "Checking Users databases integrity..."
+            local users_dbs=$(docker exec "$users_container" mysql -u root -p"$users_password" -e "SHOW DATABASES;" 2>/dev/null | wc -l)
+            if [[ $users_dbs -gt 1 ]]; then
+                log INFO "✓ Users databases integrity OK ($((users_dbs-1)) databases)"
+            else
+                log WARN "⚠ Users databases may be empty or inaccessible"
+            fi
+        else
+            log WARN "Cannot verify Users databases - missing container or password"
         fi
     else
-        log WARN "Cannot verify PanelAlpha database - missing container or password"
-    fi
+        local api_container=$(docker compose ps -q database-api)
+        local matomo_container=$(docker compose ps -q database-matomo)
 
-    # Check Matomo database
-    if [[ -n "$matomo_container" && -n "$matomo_password" ]]; then
-        log INFO "Checking Matomo database integrity..."
-        local matomo_tables=$(docker exec "$matomo_container" mysql -u matomo -p"$matomo_password" -e "USE matomo; SHOW TABLES;" 2>/dev/null | wc -l)
-        if [[ $matomo_tables -gt 1 ]]; then
-            log INFO "✓ Matomo database integrity OK ($((matomo_tables-1)) tables)"
+        # Get passwords from ENV_FILE
+        local api_password=$(grep "^API_MYSQL_PASSWORD=" "$ENV_FILE" 2>/dev/null | cut -d'=' -f2 | tr -d '"' || echo "")
+        local matomo_password=$(grep "^MATOMO_MYSQL_PASSWORD=" "$ENV_FILE" 2>/dev/null | cut -d'=' -f2 | tr -d '"' || echo "")
+
+        # Check API database
+        if [[ -n "$api_container" && -n "$api_password" ]]; then
+            log INFO "Checking PanelAlpha database integrity..."
+            local api_tables=$(docker exec "$api_container" mysql -u panelalpha -p"$api_password" -e "USE panelalpha; SHOW TABLES;" 2>/dev/null | wc -l)
+            if [[ $api_tables -gt 1 ]]; then
+                log INFO "✓ PanelAlpha database integrity OK ($((api_tables-1)) tables)"
+            else
+                log WARN "⚠ PanelAlpha database may be empty or inaccessible"
+            fi
         else
-            log WARN "⚠ Matomo database may be empty or inaccessible"
+            log WARN "Cannot verify PanelAlpha database - missing container or password"
         fi
-    else
-        log WARN "Cannot verify Matomo database - missing container or password"
+
+        # Check Matomo database
+        if [[ -n "$matomo_container" && -n "$matomo_password" ]]; then
+            log INFO "Checking Matomo database integrity..."
+            local matomo_tables=$(docker exec "$matomo_container" mysql -u matomo -p"$matomo_password" -e "USE matomo; SHOW TABLES;" 2>/dev/null | wc -l)
+            if [[ $matomo_tables -gt 1 ]]; then
+                log INFO "✓ Matomo database integrity OK ($((matomo_tables-1)) tables)"
+            else
+                log WARN "⚠ Matomo database may be empty or inaccessible"
+            fi
+        else
+            log WARN "Cannot verify Matomo database - missing container or password"
+        fi
     fi
 }
 
@@ -1938,7 +2277,13 @@ restore_volumes() {
 
     cd "$PANELALPHA_DIR"
 
-    local volumes=("api-storage" "database-api-data" "database-matomo-data" "redis-data" "matomo")
+    # Define volumes based on application type
+    local volumes=()
+    if [[ "$PANELALPHA_APP_TYPE" == "engine" ]]; then
+        volumes=("core-storage" "database-core-data" "database-users-data")
+    else
+        volumes=("api-storage" "database-api-data" "database-matomo-data" "redis-data" "matomo")
+    fi
 
     for volume in "${volumes[@]}"; do
         local volume_file="$data_dir/volumes/$volume.tar.gz"
@@ -1988,16 +2333,26 @@ restore_config() {
             fi
         fi
 
-        # Restore .env file directly from backup
-        if [[ -f "$data_dir/config/.env" ]]; then
-            log INFO "Restoring .env configuration from backup..."
-            cp "$data_dir/config/.env" .env
-            log INFO ".env file restored from backup ✓"
-
-            # Clean up backup
-            rm -f .env.current-backup
+        # Restore .env file directly from backup based on app type
+        if [[ "$PANELALPHA_APP_TYPE" == "engine" ]]; then
+            if [[ -f "$data_dir/config/.env-core" ]]; then
+                log INFO "Restoring .env-core configuration from backup..."
+                cp "$data_dir/config/.env-core" .env-core
+                log INFO ".env-core file restored from backup ✓"
+                rm -f .env-core.current-backup
+            else
+                log WARN "No .env-core file found in backup, keeping current configuration"
+            fi
         else
-            log WARN "No .env file found in backup, keeping current configuration"
+            if [[ -f "$data_dir/config/.env" ]]; then
+                log INFO "Restoring .env configuration from backup..."
+                cp "$data_dir/config/.env" .env
+                log INFO ".env file restored from backup ✓"
+                rm -f .env.current-backup
+            else
+                log WARN "No .env file found in backup, keeping current configuration"
+            fi
+        fi
         fi
 
         # Restore SSL certificates

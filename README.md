@@ -2,13 +2,16 @@
 
 Professional tool for creating secure backups (snapshots) of PanelAlpha applications.
 
+**Supports both PanelAlpha Control Panel and PanelAlpha Engine**
+
 ## 🎯 What is this?
 
 This tool allows you to:
-- **Create complete backups** of PanelAlpha (databases, files, configuration)
+- **Create complete backups** of PanelAlpha Control Panel or Engine (databases, files, configuration)
 - **Automatically create backups** at scheduled times
 - **Restore the system** on the same or new server
 - **Securely store** backups in the cloud or locally
+- **Automatically detects** whether you're running Control Panel or Engine
 
 ## 🚀 Quick Start
 
@@ -72,10 +75,20 @@ sudo ./panelalpha-snapshot.sh --cron install
 - **Moderately safe** - backups on another server
 - **Requires**: SSH access to another server
 
-## 🔧 Basic Commands
+## � Application Type Detection
+
+The tool automatically detects whether you're using:
+- **PanelAlpha Control Panel** (installed in `/opt/panelalpha/app`)
+  - Backs up: API database, Matomo database, api-storage, redis-data
+- **PanelAlpha Engine** (installed in `/opt/panelalpha/engine`)
+  - Backs up: Core database, Users databases, core-storage
+
+No manual configuration needed - the tool handles everything automatically!
+
+## �🔧 Basic Commands
 
 ```bash
-# Create backup
+# Create backup (works for both Control Panel and Engine)
 sudo ./panelalpha-snapshot.sh --snapshot
 
 # View available backups
