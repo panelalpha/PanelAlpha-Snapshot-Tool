@@ -18,9 +18,8 @@ This tool allows you to:
 ### Download the Script
 
 ```bash
-cd /opt/panelalpha
-wget https://raw.githubusercontent.com/panelalpha/PanelAlpha-Snapshot-Tool/main/pasnap.sh
-chmod +x pasnap.sh
+wget -P /opt/panelalpha/ https://raw.githubusercontent.com/panelalpha/PanelAlpha-Snapshot-Tool/main/pasnap.sh
+chmod +x /opt/panelalpha/pasnap.sh
 ```
 
 ## �🚀 Quick Start
