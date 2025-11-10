@@ -241,6 +241,158 @@ load_configuration() {
 load_configuration
 
 # ======================
+# VERSION CHECK FUNCTIONS
+# ======================
+
+# Check for script updates
+check_for_updates() {
+    # Skip update check if disabled via environment variable
+    if [[ "${PASNAP_SKIP_UPDATE_CHECK:-0}" == "1" ]]; then
+        return 0
+    fi
+
+    # Only check once per day
+    local update_check_file="/var/tmp/.pasnap_last_update_check"
+    local current_time=$(date +%s)
+    
+    if [[ -f "$update_check_file" ]]; then
+        local last_check=$(cat "$update_check_file" 2>/dev/null || echo "0")
+        local time_diff=$((current_time - last_check))
+        # 86400 seconds = 24 hours
+        if [[ $time_diff -lt 86400 ]]; then
+            return 0
+        fi
+    fi
+
+    log DEBUG "Checking for updates..."
+
+    # Try to fetch latest version from GitHub
+    local remote_version=""
+    local github_raw_url="https://raw.githubusercontent.com/panelalpha/PanelAlpha-Snapshot-Tool/main/pasnap.sh"
+    
+    # Use timeout to prevent hanging
+    if command -v curl &> /dev/null; then
+        remote_version=$(timeout 5 curl -s "$github_raw_url" 2>/dev/null | grep '^readonly SCRIPT_VERSION=' | cut -d'"' -f2 | head -1)
+    elif command -v wget &> /dev/null; then
+        remote_version=$(timeout 5 wget -qO- "$github_raw_url" 2>/dev/null | grep '^readonly SCRIPT_VERSION=' | cut -d'"' -f2 | head -1)
+    else
+        log DEBUG "Neither curl nor wget available, skipping update check"
+        return 0
+    fi
+
+    # Save current time as last check
+    echo "$current_time" > "$update_check_file" 2>/dev/null || true
+
+    # If we couldn't fetch version, silently return
+    if [[ -z "$remote_version" ]]; then
+        log DEBUG "Could not check for updates (network issue or timeout)"
+        return 0
+    fi
+
+    # Compare versions
+    if [[ "$remote_version" != "$SCRIPT_VERSION" ]]; then
+        echo ""
+        echo "╔════════════════════════════════════════════════════════════╗"
+        echo "║                   UPDATE AVAILABLE                         ║"
+        echo "╚════════════════════════════════════════════════════════════╝"
+        echo ""
+        echo "  Current version: $SCRIPT_VERSION"
+        echo "  Latest version:  $remote_version"
+        echo ""
+        
+        # Ask user if they want to update
+        read -p "  Do you want to update now? (y/n): " -n 1 -r
+        echo ""
+        
+        if [[ $REPLY =~ ^[Yy]$ ]]; then
+            log INFO "Updating script to version $remote_version..."
+            
+            # Create backup of current script
+            local backup_file="${SCRIPT_DIR}/pasnap.sh.backup-$(date +%Y%m%d-%H%M%S)"
+            if cp "${SCRIPT_DIR}/pasnap.sh" "$backup_file" 2>/dev/null; then
+                log INFO "Backup created: $backup_file"
+            else
+                log WARN "Could not create backup"
+            fi
+            
+            # Download new version
+            local temp_file=$(mktemp)
+            if command -v curl &> /dev/null; then
+                if curl -sL "$github_raw_url" -o "$temp_file" 2>/dev/null; then
+                    # Verify download
+                    if [[ -s "$temp_file" ]] && grep -q "SCRIPT_VERSION" "$temp_file"; then
+                        if mv "$temp_file" "${SCRIPT_DIR}/pasnap.sh" 2>/dev/null; then
+                            chmod +x "${SCRIPT_DIR}/pasnap.sh"
+                            echo ""
+                            log INFO "✓ Update successful! Script updated to version $remote_version"
+                            log INFO "Previous version backed up to: $backup_file"
+                            echo ""
+                            log INFO "Restarting script with new version..."
+                            echo ""
+                            sleep 2
+                            # Re-execute script with same arguments
+                            exec "${SCRIPT_DIR}/pasnap.sh" "$@"
+                        else
+                            log ERROR "Failed to replace script file (permission denied?)"
+                            rm -f "$temp_file"
+                        fi
+                    else
+                        log ERROR "Downloaded file appears corrupted"
+                        rm -f "$temp_file"
+                    fi
+                else
+                    log ERROR "Failed to download update"
+                    rm -f "$temp_file"
+                fi
+            elif command -v wget &> /dev/null; then
+                if wget -q "$github_raw_url" -O "$temp_file" 2>/dev/null; then
+                    # Verify download
+                    if [[ -s "$temp_file" ]] && grep -q "SCRIPT_VERSION" "$temp_file"; then
+                        if mv "$temp_file" "${SCRIPT_DIR}/pasnap.sh" 2>/dev/null; then
+                            chmod +x "${SCRIPT_DIR}/pasnap.sh"
+                            echo ""
+                            log INFO "✓ Update successful! Script updated to version $remote_version"
+                            log INFO "Previous version backed up to: $backup_file"
+                            echo ""
+                            log INFO "Restarting script with new version..."
+                            echo ""
+                            sleep 2
+                            # Re-execute script with same arguments
+                            exec "${SCRIPT_DIR}/pasnap.sh" "$@"
+                        else
+                            log ERROR "Failed to replace script file (permission denied?)"
+                            rm -f "$temp_file"
+                        fi
+                    else
+                        log ERROR "Downloaded file appears corrupted"
+                        rm -f "$temp_file"
+                    fi
+                else
+                    log ERROR "Failed to download update"
+                    rm -f "$temp_file"
+                fi
+            else
+                log ERROR "Neither curl nor wget available for update"
+            fi
+        else
+            echo ""
+            log INFO "Update skipped. To update manually, run:"
+            echo "  cd $SCRIPT_DIR"
+            echo "  wget -O pasnap.sh $github_raw_url"
+            echo "  chmod +x pasnap.sh"
+            echo ""
+            log INFO "To skip update check, set: export PASNAP_SKIP_UPDATE_CHECK=1"
+            echo ""
+            sleep 2
+        fi
+    else
+        log DEBUG "Script is up to date (version $SCRIPT_VERSION)"
+    fi
+
+    return 0
+}
+
+# ======================
 # MAIN FUNCTIONS
 # ======================
 
@@ -2122,7 +2274,7 @@ restore_databases() {
         update_system_settings
     fi
 
-    # Step 7: Verify database integrity
+    # Verify database integrity
     verify_database_integrity
 
     log INFO "Database restore completed successfully"
@@ -2512,6 +2664,10 @@ show_cron_status() {
 main() {
     # Set up error handling
     set -euo pipefail
+    
+    # Check for updates before running any commands
+    # This may restart the script with new version if user accepts update
+    check_for_updates "$@"
     
     # Validate input arguments
     if [[ $# -eq 0 ]]; then
