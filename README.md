@@ -13,9 +13,19 @@ This tool allows you to:
 - **Securely store** backups in the cloud or locally
 - **Automatically detects** whether you're running Control Panel or Engine
 
-## 🚀 Quick Start
+## � Installation
 
-### Step 1: Installation
+### Download the Script
+
+```bash
+cd /opt/panelalpha
+wget https://raw.githubusercontent.com/panelalpha/PanelAlpha-Snapshot-Tool/main/pasnap.sh
+chmod +x pasnap.sh
+```
+
+## �🚀 Quick Start
+
+### Step 1: Install Dependencies
 
 Run in terminal on the server with PanelAlpha:
 
