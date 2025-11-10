@@ -5,13 +5,6 @@ All notable changes to PanelAlpha Snapshot Tool will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-# Changelog
-
-All notable changes to PanelAlpha Snapshot & Restore Tool will be documented in this file.
-
-The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
-and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
-
 ## [1.1.0] - 2025-11-10
 
 ### Added
@@ -62,8 +55,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Detection logic checks for `/opt/panelalpha/engine` and `/opt/panelalpha/app`
 - Backward compatibility maintained: defaults to Control Panel if detection fails
 - Control Panel volumes reduced to: `api-storage`, `database-api-data`, `redis-data`
-
-## [1.0.0] - Previous release
 
 ## [1.0.0] - Previous release
 
