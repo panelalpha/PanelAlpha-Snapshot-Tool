@@ -2269,7 +2269,6 @@ restore_config() {
                 log WARN "No .env file found in backup, keeping current configuration"
             fi
         fi
-        fi
 
         # Restore SSL certificates
         if [[ -d "$data_dir/config/ssl/letsencrypt" ]]; then
