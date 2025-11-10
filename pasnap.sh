@@ -1,8 +1,8 @@
 #!/bin/bash
 
-# PanelAlpha Create Snapshot & Restore Script v1.0
-# Professional script for creating snapshots and restoring PanelAlpha application using Restic
-# Usage: ./panelalpha-snapshot.sh [options]
+# PanelAlpha Snapshot & Restore Tool
+# Automated backup and disaster recovery solution for PanelAlpha Control Panel and Engine
+# Usage: ./pasnap.sh [options]
 
 set -euo pipefail
 
@@ -10,8 +10,8 @@ set -euo pipefail
 # CONFIGURATION CONSTANTS
 # ======================
 
-readonly SCRIPT_VERSION="1.2"
-readonly SCRIPT_NAME="PanelAlpha Create Snapshot & Restore Script"
+readonly SCRIPT_VERSION="1.1.0"
+readonly SCRIPT_NAME="PanelAlpha Snapshot & Restore Tool"
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Detect PanelAlpha installation type and set paths accordingly
@@ -229,9 +229,9 @@ load_configuration() {
     fi
 
     # Set default values with parameter expansion
-    BACKUP_TEMP_DIR="${BACKUP_TEMP_DIR:-/var/tmp}/panelalpha-snapshot-$(date +%Y%m%d-%H%M%S)"
-    RESTORE_TEMP_DIR="${RESTORE_TEMP_DIR:-/var/tmp}/panelalpha-restore-$(date +%Y%m%d-%H%M%S)"
-    LOG_FILE="${LOG_FILE:-/var/log/panelalpha-snapshot.log}"
+    BACKUP_TEMP_DIR="${BACKUP_TEMP_DIR:-/var/tmp}/pasnap-snapshot-$(date +%Y%m%d-%H%M%S)"
+    RESTORE_TEMP_DIR="${RESTORE_TEMP_DIR:-/var/tmp}/pasnap-restore-$(date +%Y%m%d-%H%M%S)"
+    LOG_FILE="${LOG_FILE:-/var/log/pasnap.log}"
     BACKUP_RETENTION_DAYS="${BACKUP_RETENTION_DAYS:-30}"
     BACKUP_TAG="${BACKUP_TAG_PREFIX:-panelalpha}-$(hostname)"
     RESTIC_CACHE_DIR="${RESTIC_CACHE_DIR:-/var/cache/restic}"
@@ -302,7 +302,7 @@ Supports both PanelAlpha Control Panel and Engine
   - Regularly check snapshot integrity
 
 🆘 HELP:
-  For issues check logs: /var/log/panelalpha-snapshot.log
+  For issues check logs: /var/log/pasnap.log
   
 EOF
 }
@@ -808,8 +808,8 @@ setup_config() {
                 read -p "Bucket name: " s3_bucket
             done
             read -p "S3 Endpoint (leave empty for AWS, or enter e.g. s3.hetzner.cloud): " s3_endpoint
-            read -p "Path prefix in bucket (e.g. panelalpha-snapshots): " s3_prefix
-            s3_prefix=${s3_prefix:-panelalpha-snapshots}
+            read -p "Path prefix in bucket (e.g. pasnap): " s3_prefix
+            s3_prefix=${s3_prefix:-pasnap}
 
             # Validate input
             if [[ -z "$s3_access_key" || -z "$s3_secret_key" || -z "$s3_bucket" ]]; then
@@ -885,7 +885,7 @@ BACKUP_HOUR=$backup_hour
 BACKUP_TAG_PREFIX="panelalpha"
 
 # System paths and logging
-LOG_FILE="$LOG_FILE"
+LOG_FILE="/var/log/pasnap.log"
 BACKUP_TEMP_DIR="/var/tmp"
 RESTIC_CACHE_DIR="/var/cache/restic"
 EOF
@@ -1042,15 +1042,13 @@ create_database_snapshot() {
         
     else
         # Original Control Panel logic
-        log INFO "Detected PanelAlpha Control Panel - backing up API and Matomo databases"
+        log INFO "Detected PanelAlpha Control Panel - backing up API database"
         
         # Extract database passwords from environment file securely
         local api_password
-        local matomo_password
         api_password=$(grep "^API_MYSQL_PASSWORD=" "$ENV_FILE" 2>/dev/null | cut -d'=' -f2 | tr -d '"' | head -1 || echo "")
-        matomo_password=$(grep "^MATOMO_MYSQL_PASSWORD=" "$ENV_FILE" 2>/dev/null | cut -d'=' -f2 | tr -d '"' | head -1 || echo "")
 
-        local total_steps=2
+        local total_steps=1
         local current_step=0
 
         # Snapshot PanelAlpha database
@@ -1099,59 +1097,6 @@ create_database_snapshot() {
             fi
         else
             log WARN "API_MYSQL_PASSWORD not found - skipping PanelAlpha database"
-            current_step=$total_steps  # Skip progress for this step
-        fi
-
-        # Snapshot Matomo database
-        if [[ -n "$matomo_password" ]]; then
-            if [[ -n "$api_password" ]]; then
-                ((current_step++))
-            else
-                current_step=$total_steps  # If API was skipped, this is the only step
-            fi
-            show_progress $current_step $total_steps "Creating Matomo database snapshot"
-            
-            local matomo_container
-            matomo_container=$(docker compose ps -q database-matomo 2>/dev/null)
-
-            if [[ -z "$matomo_container" ]]; then
-                log ERROR "Matomo database container not found"
-                snapshot_success=false
-            else
-                # Test database connectivity with timeout
-                if timeout "$MYSQL_TIMEOUT" docker exec "$matomo_container" mysql -u matomo -p"$matomo_password" -e "SELECT 1;" >/dev/null 2>&1; then
-                    log DEBUG "Matomo database connection verified"
-
-                    # Create database dump
-                    local dump_file="$snapshot_dir/databases/matomo.sql"
-                    if timeout 300 docker exec "$matomo_container" \
-                        mysqldump -u matomo -p"$matomo_password" matomo \
-                        --single-transaction --routines --triggers --lock-tables=false \
-                        --add-drop-database --create-options --disable-keys \
-                        --extended-insert --quick --set-charset \
-                        > "$dump_file" 2>/dev/null; then
-
-                        # Verify snapshot file integrity
-                        if verify_file_integrity "$dump_file" 1000; then
-                            local matomo_size
-                            matomo_size=$(stat -c%s "$dump_file" 2>/dev/null || echo "0")
-                            log INFO "✓ Matomo database snapshot created ($(( matomo_size / 1024 )) KB)"
-                        else
-                            log ERROR "✗ Matomo database snapshot is corrupted"
-                            snapshot_success=false
-                        fi
-                    else
-                        log ERROR "✗ Matomo database snapshot failed"
-                        snapshot_success=false
-                    fi
-                else
-                    log ERROR "✗ Cannot connect to Matomo database"
-                    log ERROR "Check database password in $ENV_FILE file"
-                    snapshot_success=false
-                fi
-            fi
-        else
-            log WARN "MATOMO_MYSQL_PASSWORD not found - skipping Matomo database"
         fi
     fi
 
@@ -1179,11 +1124,6 @@ create_database_snapshot() {
                 local api_lines
                 api_lines=$(wc -l < "$snapshot_dir/databases/panelalpha-api.sql" 2>/dev/null || echo "0")
                 log DEBUG "  PanelAlpha: $api_lines lines"
-            fi
-            if [[ -f "$snapshot_dir/databases/matomo.sql" ]]; then
-                local matomo_lines
-                matomo_lines=$(wc -l < "$snapshot_dir/databases/matomo.sql" 2>/dev/null || echo "0")
-                log DEBUG "  Matomo: $matomo_lines lines"
             fi
         fi
         
@@ -1217,9 +1157,7 @@ create_volumes_snapshot() {
         volumes=(
             "api-storage"
             "database-api-data"
-            "database-matomo-data"
             "redis-data"
-            "matomo"
         )
     fi
 
@@ -1538,8 +1476,8 @@ $(if [[ "$PANELALPHA_APP_TYPE" == "engine" ]]; then
     echo "- Docker volumes (core-storage, database-core-data, database-users-data)"
     echo "- Configuration files (docker-compose.yml, .env-core, packages/, SSL certificates)"
 else
-    echo "- Databases (PanelAlpha API, Matomo)"
-    echo "- Docker volumes (api-storage, database-api-data, database-matomo-data, redis-data, matomo)"
+    echo "- Databases (PanelAlpha API)"
+    echo "- Docker volumes (api-storage, database-api-data, redis-data)"
     echo "- Configuration files (docker-compose.yml, .env, packages/, SSL certificates)"
 fi)
 
@@ -1552,7 +1490,7 @@ Recovery Instructions:
 1. Install PanelAlpha on target server
 2. Copy this snapshot tool to target server
 3. Configure snapshot repository (same settings)
-4. Run: sudo ./panelalpha-snapshot.sh --restore <snapshot-id>
+4. Run: sudo ./pasnap.sh --restore <snapshot-id>
 
 For detailed recovery instructions, see the README.md file.
 
@@ -1701,16 +1639,23 @@ wait_for_database_containers_enhanced() {
         container2=$(docker compose ps -q database-users)
         name1="Core"
         name2="Users"
+        
+        if [[ -z "$container1" || -z "$container2" ]]; then
+            log ERROR "One or both database containers are not running"
+            return 1
+        fi
     else
         container1=$(docker compose ps -q database-api)
-        container2=$(docker compose ps -q database-matomo)
         name1="API"
-        name2="Matomo"
-    fi
-
-    if [[ -z "$container1" || -z "$container2" ]]; then
-        log ERROR "One or both database containers are not running"
-        return 1
+        
+        if [[ -z "$container1" ]]; then
+            log ERROR "Database container is not running"
+            return 1
+        fi
+        
+        # For Control Panel, only check one container
+        container2=""
+        name2=""
     fi
 
     local max_attempts=120
@@ -1720,7 +1665,7 @@ wait_for_database_containers_enhanced() {
 
     while [[ $attempt -lt $max_attempts ]]; do
         local db1_ready=false
-        local db2_ready=false
+        local db2_ready=true  # Default to true for Control Panel (single container)
 
         # Check first database - just basic MySQL connectivity without authentication
         if docker exec "$container1" mysqladmin ping --silent 2>/dev/null; then
@@ -1730,16 +1675,23 @@ wait_for_database_containers_enhanced() {
             log DEBUG "$name1 database not ready yet"
         fi
 
-        # Check second database
-        if docker exec "$container2" mysqladmin ping --silent 2>/dev/null; then
-            log DEBUG "$name2 database is responding to ping"
-            db2_ready=true
-        else
-            log DEBUG "$name2 database not ready yet"
+        # Check second database only if it exists (Engine only)
+        if [[ -n "$container2" ]]; then
+            db2_ready=false
+            if docker exec "$container2" mysqladmin ping --silent 2>/dev/null; then
+                log DEBUG "$name2 database is responding to ping"
+                db2_ready=true
+            else
+                log DEBUG "$name2 database not ready yet"
+            fi
         fi
 
         if [[ "$db1_ready" == "true" && "$db2_ready" == "true" ]]; then
-            log INFO "Both database containers are ready"
+            if [[ -n "$container2" ]]; then
+                log INFO "Both database containers are ready"
+            else
+                log INFO "Database container is ready"
+            fi
             return 0
         fi
 
@@ -1756,8 +1708,10 @@ wait_for_database_containers_enhanced() {
     log ERROR "Debug information:"
     log ERROR "$name1 container logs:"
     docker logs "$container1" --tail 10 2>/dev/null || true
-    log ERROR "$name2 container logs:"
-    docker logs "$container2" --tail 10 2>/dev/null || true
+    if [[ -n "$container2" ]]; then
+        log ERROR "$name2 container logs:"
+        docker logs "$container2" --tail 10 2>/dev/null || true
+    fi
 
     return 1
 }
@@ -1774,7 +1728,7 @@ clean_database_volumes() {
         volume2="${PWD##*/}_database-users-data"
     else
         volume1="${PWD##*/}_database-api-data"
-        volume2="${PWD##*/}_database-matomo-data"
+        volume2=""  # No second database for Control Panel
     fi
 
     # Remove first database volume
@@ -1783,8 +1737,8 @@ clean_database_volumes() {
         docker volume rm "$volume1" 2>/dev/null || log WARN "Could not remove volume (may not exist)"
     fi
 
-    # Remove second database volume
-    if docker volume inspect "$volume2" &> /dev/null; then
+    # Remove second database volume (Engine only)
+    if [[ -n "$volume2" ]] && docker volume inspect "$volume2" &> /dev/null; then
         log INFO "Removing database volume: $volume2"
         docker volume rm "$volume2" 2>/dev/null || log WARN "Could not remove volume (may not exist)"
     fi
@@ -1912,12 +1866,6 @@ restore_single_database() {
         "panelalpha")
             if ! setup_database_user "$container" "panelalpha" "$db_password"; then
                 log ERROR "Failed to setup panelalpha user - cannot proceed with restore"
-                return 1
-            fi
-            ;;
-        "matomo")
-            if ! setup_database_user "$container" "matomo" "$db_password"; then
-                log ERROR "Failed to setup matomo user - cannot proceed with restore"
                 return 1
             fi
             ;;
@@ -2128,11 +2076,10 @@ restore_databases() {
         log INFO "Restoring databases for PanelAlpha Control Panel"
         
         local api_password=$(grep "^API_MYSQL_PASSWORD=" "$ENV_FILE" 2>/dev/null | cut -d'=' -f2 | tr -d '"' || echo "")
-        local matomo_password=$(grep "^MATOMO_MYSQL_PASSWORD=" "$ENV_FILE" 2>/dev/null | cut -d'=' -f2 | tr -d '"' || echo "")
 
         # Step 1: Completely stop all database containers
-        log INFO "Stopping all database containers for clean restore..."
-        docker compose stop database-api database-matomo 2>/dev/null || true
+        log INFO "Stopping database container for clean restore..."
+        docker compose stop database-api 2>/dev/null || true
         sleep 5
 
         # Step 2: Clean database volumes for fresh start
@@ -2140,17 +2087,17 @@ restore_databases() {
         clean_database_volumes
 
         # Step 3: Start containers and wait for readiness
-        log INFO "Starting database containers..."
-        docker compose up -d database-api database-matomo
+        log INFO "Starting database container..."
+        docker compose up -d database-api
 
         if ! wait_for_database_containers_enhanced; then
-            log ERROR "Database containers failed to start properly"
+            log ERROR "Database container failed to start properly"
             log INFO "Attempting to clean volumes and restart..."
             clean_database_volumes
-            docker compose up -d database-api database-matomo
+            docker compose up -d database-api
 
             if ! wait_for_database_containers_enhanced; then
-                log ERROR "Database containers still not ready after volume cleanup"
+                log ERROR "Database container still not ready after volume cleanup"
                 return 1
             fi
         fi
@@ -2171,23 +2118,7 @@ restore_databases() {
             fi
         fi
 
-        # Step 5: Restore Matomo database
-        if [[ -f "$data_dir/databases/matomo.sql" && -n "$matomo_password" ]]; then
-            log INFO "Found Matomo database snapshot and password"
-            if ! restore_single_database "matomo" "database-matomo" "$matomo_password" "$data_dir/databases/matomo.sql"; then
-                log ERROR "Matomo database restore failed"
-                return 1
-            fi
-        else
-            if [[ ! -f "$data_dir/databases/matomo.sql" ]]; then
-                log WARN "Matomo database snapshot file not found"
-            fi
-            if [[ -z "$matomo_password" ]]; then
-                log WARN "MATOMO_MYSQL_PASSWORD not found in $ENV_FILE"
-            fi
-        fi
-
-        # Step 6: Update system settings for current server
+        # Step 5: Update system settings for current server
         update_system_settings
     fi
 
@@ -2236,11 +2167,9 @@ verify_database_integrity() {
         fi
     else
         local api_container=$(docker compose ps -q database-api)
-        local matomo_container=$(docker compose ps -q database-matomo)
 
         # Get passwords from ENV_FILE
         local api_password=$(grep "^API_MYSQL_PASSWORD=" "$ENV_FILE" 2>/dev/null | cut -d'=' -f2 | tr -d '"' || echo "")
-        local matomo_password=$(grep "^MATOMO_MYSQL_PASSWORD=" "$ENV_FILE" 2>/dev/null | cut -d'=' -f2 | tr -d '"' || echo "")
 
         # Check API database
         if [[ -n "$api_container" && -n "$api_password" ]]; then
@@ -2253,19 +2182,6 @@ verify_database_integrity() {
             fi
         else
             log WARN "Cannot verify PanelAlpha database - missing container or password"
-        fi
-
-        # Check Matomo database
-        if [[ -n "$matomo_container" && -n "$matomo_password" ]]; then
-            log INFO "Checking Matomo database integrity..."
-            local matomo_tables=$(docker exec "$matomo_container" mysql -u matomo -p"$matomo_password" -e "USE matomo; SHOW TABLES;" 2>/dev/null | wc -l)
-            if [[ $matomo_tables -gt 1 ]]; then
-                log INFO "✓ Matomo database integrity OK ($((matomo_tables-1)) tables)"
-            else
-                log WARN "⚠ Matomo database may be empty or inaccessible"
-            fi
-        else
-            log WARN "Cannot verify Matomo database - missing container or password"
         fi
     fi
 }
@@ -2282,7 +2198,7 @@ restore_volumes() {
     if [[ "$PANELALPHA_APP_TYPE" == "engine" ]]; then
         volumes=("core-storage" "database-core-data" "database-users-data")
     else
-        volumes=("api-storage" "database-api-data" "database-matomo-data" "redis-data" "matomo")
+        volumes=("api-storage" "database-api-data" "redis-data")
     fi
 
     for volume in "${volumes[@]}"; do
@@ -2388,7 +2304,7 @@ restore_from_snapshot() {
     # Find data directory
     local data_dir="$RESTORE_TEMP_DIR"
     if [[ -d "$RESTORE_TEMP_DIR/tmp" ]]; then
-        data_dir=$(find "$RESTORE_TEMP_DIR/tmp" -name "panelalpha-snapshot-*" -type d | head -1)
+        data_dir=$(find "$RESTORE_TEMP_DIR/tmp" -name "pasnap-snapshot-*" -type d | head -1)
     fi
 
     if [[ ! -d "$data_dir" ]]; then
@@ -2425,11 +2341,7 @@ restore_from_snapshot() {
     log INFO "Restoring configuration files..."
     restore_config "$data_dir"
 
-    # Step 4: Start database containers
-    log INFO "Starting database containers..."
-    docker compose up -d database-api database-matomo
-
-    # Step 5: Wait for databases and restore data
+    # Step 4: Restore databases (function handles container startup)
     log INFO "Restoring databases..."
     restore_databases "$data_dir"
 
@@ -2508,13 +2420,13 @@ install_cron_job() {
         backup_hour=2
     fi
 
-    local cron_line="0 $backup_hour * * * $SCRIPT_DIR/panelalpha-snapshot.sh --snapshot >> $LOG_FILE 2>&1"
+    local cron_line="0 $backup_hour * * * $SCRIPT_DIR/pasnap.sh --snapshot >> $LOG_FILE 2>&1"
 
     # Check if cron entry already exists
-    if crontab -l 2>/dev/null | grep -q "$SCRIPT_DIR/panelalpha-snapshot.sh"; then
+    if crontab -l 2>/dev/null | grep -q "$SCRIPT_DIR/pasnap.sh"; then
         log WARN "Automatic snapshot cron job already exists"
         log INFO "Current entry:"
-        crontab -l 2>/dev/null | grep "$SCRIPT_DIR/panelalpha-snapshot.sh" || true
+        crontab -l 2>/dev/null | grep "$SCRIPT_DIR/pasnap.sh" || true
 
         read -p "Do you want to replace it? (yes/no): " replace
         if [[ "$replace" != "yes" ]]; then
@@ -2523,7 +2435,7 @@ install_cron_job() {
         fi
 
         # Remove existing entry
-        if crontab -l 2>/dev/null | grep -v "$SCRIPT_DIR/panelalpha-snapshot.sh" | crontab -; then
+        if crontab -l 2>/dev/null | grep -v "$SCRIPT_DIR/pasnap.sh" | crontab -; then
             log INFO "✓ Existing cron job removed"
         else
             log ERROR "Failed to remove existing cron job"
@@ -2549,13 +2461,13 @@ remove_cron_job() {
 
     check_root
 
-    if ! crontab -l 2>/dev/null | grep -q "$SCRIPT_DIR/panelalpha-snapshot.sh"; then
+    if ! crontab -l 2>/dev/null | grep -q "$SCRIPT_DIR/pasnap.sh"; then
         log INFO "No automatic snapshot cron job found"
         return 0
     fi
 
     # Remove cron entry
-    if crontab -l 2>/dev/null | grep -v "$SCRIPT_DIR/panelalpha-snapshot.sh" | crontab -; then
+    if crontab -l 2>/dev/null | grep -v "$SCRIPT_DIR/pasnap.sh" | crontab -; then
         log INFO "✓ Automatic snapshot schedule removed"
     else
         log ERROR "Failed to remove cron job"
@@ -2567,11 +2479,11 @@ remove_cron_job() {
 show_cron_status() {
     log INFO "=== Automatic Snapshot Status ==="
 
-    if crontab -l 2>/dev/null | grep -q "$SCRIPT_DIR/panelalpha-snapshot.sh"; then
+    if crontab -l 2>/dev/null | grep -q "$SCRIPT_DIR/pasnap.sh"; then
         echo "✓ Automatic snapshots are ENABLED"
         echo
         echo "Current schedule:"
-        crontab -l 2>/dev/null | grep "$SCRIPT_DIR/panelalpha-snapshot.sh" || echo "  (could not retrieve)"
+        crontab -l 2>/dev/null | grep "$SCRIPT_DIR/pasnap.sh" || echo "  (could not retrieve)"
         echo
         echo "Log file: $LOG_FILE"
 
@@ -2713,7 +2625,7 @@ error_handler() {
     local line_number=$1
     
     log ERROR "❌ An unexpected error occurred at line $line_number (code: $exit_code)"
-    log ERROR "Check logs at: /var/log/panelalpha-snapshot.log"
+    log ERROR "Check logs at: /var/log/pasnap.log"
     log ERROR "Use '$0 --help' for help"
     
     # Cleanup if needed
