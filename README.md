@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="img/logo.svg" alt="PanelAlpha Snapshot Tool" width="120"/>
+</p>
+
 # 📸 PanelAlpha - Snapshot Tool
 
 Professional tool for creating secure backups (snapshots) of PanelAlpha applications.
