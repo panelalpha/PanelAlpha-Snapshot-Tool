@@ -10,13 +10,15 @@ set -euo pipefail
 # CONFIGURATION CONSTANTS
 # ======================
 
-readonly SCRIPT_VERSION="1.1.0"
+readonly SCRIPT_VERSION="1.2.0"
 readonly SCRIPT_NAME="PanelAlpha Snapshot & Restore Tool"
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Detect PanelAlpha installation type and set paths accordingly
 detect_panelalpha_type() {
-    if [[ -d "/opt/panelalpha/engine" && -f "/opt/panelalpha/engine/docker-compose.yml" ]]; then
+    if [[ -d "/opt/panelalpha/shared-hosting" && -f "/opt/panelalpha/shared-hosting/docker-compose.yml" ]]; then
+        echo "engine"
+    elif [[ -d "/opt/panelalpha/engine" && -f "/opt/panelalpha/engine/docker-compose.yml" ]]; then
         echo "engine"
     elif [[ -d "/opt/panelalpha/app" && -f "/opt/panelalpha/app/docker-compose.yml" ]]; then
         echo "app"
@@ -27,25 +29,61 @@ detect_panelalpha_type() {
 
 readonly PANELALPHA_APP_TYPE="$(detect_panelalpha_type)"
 
-# Set paths based on application type
+# Global configuration directory
+readonly CONFIG_DIR="/opt/panelalpha/pasnap"
+readonly CONFIG_FILE="${CONFIG_DIR}/.env-backup"
+
+# Resolve PanelAlpha directory and environment file for the detected type
+PANELALPHA_DIR=""
+ENV_FILE=""
+ENV_FILE_NAME=""
+
 if [[ "$PANELALPHA_APP_TYPE" == "engine" ]]; then
-    readonly PANELALPHA_DIR="/opt/panelalpha/engine"
-    readonly CONFIG_FILE="${PANELALPHA_DIR}/.env-backup"
-    readonly ENV_FILE="${PANELALPHA_DIR}/.env-core"
+    engine_candidates=("/opt/panelalpha/shared-hosting" "/opt/panelalpha/engine")
+    for candidate in "${engine_candidates[@]}"; do
+        if [[ -d "$candidate" && -f "$candidate/docker-compose.yml" ]]; then
+            PANELALPHA_DIR="$candidate"
+            break
+        fi
+    done
+
+    if [[ -z "$PANELALPHA_DIR" ]]; then
+        PANELALPHA_DIR="/opt/panelalpha/shared-hosting"
+    fi
+
+    if [[ -f "$PANELALPHA_DIR/.env" ]]; then
+        ENV_FILE="$PANELALPHA_DIR/.env"
+        ENV_FILE_NAME=".env"
+    elif [[ -f "$PANELALPHA_DIR/.env-core" ]]; then
+        ENV_FILE="$PANELALPHA_DIR/.env-core"
+        ENV_FILE_NAME=".env-core"
+    else
+        ENV_FILE="$PANELALPHA_DIR/.env"
+        ENV_FILE_NAME=".env"
+    fi
 elif [[ "$PANELALPHA_APP_TYPE" == "app" ]]; then
-    readonly PANELALPHA_DIR="/opt/panelalpha/app"
-    readonly CONFIG_FILE="${PANELALPHA_DIR}/.env-backup"
-    readonly ENV_FILE="${PANELALPHA_DIR}/.env"
+    PANELALPHA_DIR="/opt/panelalpha/app"
+    ENV_FILE="$PANELALPHA_DIR/.env"
+    ENV_FILE_NAME=".env"
 else
     # Default to app for backward compatibility
-    readonly PANELALPHA_DIR="/opt/panelalpha/app"
-    readonly CONFIG_FILE="${PANELALPHA_DIR}/.env-backup"
-    readonly ENV_FILE="${PANELALPHA_DIR}/.env"
+    PANELALPHA_DIR="/opt/panelalpha/app"
+    ENV_FILE="$PANELALPHA_DIR/.env"
+    ENV_FILE_NAME=".env"
 fi
+
+readonly PANELALPHA_DIR
+readonly ENV_FILE
+readonly ENV_FILE_NAME
 
 # Security constants
 readonly MYSQL_TIMEOUT=30
 readonly MAX_RETRY_ATTEMPTS=3
+readonly CORE_DUMP_TIMEOUT="${PASNAP_CORE_DUMP_TIMEOUT:-600}"
+readonly USERS_DUMP_TIMEOUT="${PASNAP_USERS_DUMP_TIMEOUT:-1800}"
+readonly USERS_DUMP_COMPRESSION_LEVEL="${PASNAP_USERS_DUMP_COMPRESSION_LEVEL:-1}"
+readonly VOLUME_SNAPSHOT_TIMEOUT="${PASNAP_VOLUME_SNAPSHOT_TIMEOUT:-7200}"
+readonly USERS_HOME_SNAPSHOT_TIMEOUT="${PASNAP_USERS_HOME_SNAPSHOT_TIMEOUT:-14400}"
 
 # Color constants for logging
 readonly COLOR_RED='\033[0;31m'
@@ -198,6 +236,65 @@ show_progress() {
     fi
 }
 
+# Monitor database dump progress by checking file size
+monitor_dump_progress() {
+    local dump_file="$1"
+    local description="$2"
+    local timeout="${3:-600}"
+    
+    local start_time=$(date +%s)
+    local last_size=0
+    local stall_count=0
+    
+    while [[ -e "$dump_file" ]] || sleep 1; do
+        if [[ ! -e "$dump_file" ]]; then
+            sleep 2
+            continue
+        fi
+        
+        local current_size
+        current_size=$(stat -c%s "$dump_file" 2>/dev/null || echo "0")
+        local current_time=$(date +%s)
+        local elapsed=$((current_time - start_time))
+        
+        # Check if we exceeded timeout
+        if [[ $elapsed -gt $timeout ]]; then
+            printf "\r%s - timeout after %ds\n" "$description" "$elapsed"
+            return 1
+        fi
+        
+        # Check if file is growing
+        if [[ $current_size -gt $last_size ]]; then
+            local size_mb=$((current_size / 1024 / 1024))
+            local speed=$((current_size - last_size))
+            local speed_mb=$((speed / 1024 / 1024))
+            
+            if [[ $speed_mb -gt 0 ]]; then
+                printf "\r%s - %d MB (%.1f MB/s, %ds)" "$description" "$size_mb" "$speed_mb" "$elapsed"
+            else
+                printf "\r%s - %d MB (%ds)" "$description" "$size_mb" "$elapsed"
+            fi
+            
+            last_size=$current_size
+            stall_count=0
+        else
+            # File not growing - might be finished or stalled
+            ((stall_count++))
+            
+            if [[ $stall_count -gt 5 ]]; then
+                # File hasn't grown for 5 seconds, probably finished
+                local size_mb=$((current_size / 1024 / 1024))
+                printf "\r%s - %d MB (completed in %ds)\n" "$description" "$size_mb" "$elapsed"
+                return 0
+            fi
+        fi
+        
+        sleep 1
+    done
+    
+    return 0
+}
+
 # Check if script is running as root
 check_root() {
     if [[ $EUID -ne 0 ]]; then
@@ -212,6 +309,13 @@ check_root() {
 
 # Load and validate configuration from .env-backup file
 load_configuration() {
+    # Check for old configuration location and migrate if necessary
+    if [[ -f "/opt/panelalpha/app/.env-backup" ]] && [[ ! -f "$CONFIG_FILE" ]]; then
+        mkdir -p "$(dirname "$CONFIG_FILE")"
+        mv "/opt/panelalpha/app/.env-backup" "$CONFIG_FILE"
+        log INFO "Migrated configuration from /opt/panelalpha/app/.env-backup to $CONFIG_FILE"
+    fi
+
     if [[ -f "$CONFIG_FILE" ]]; then
         # Fix (ticket#2060): Remove PANELALPHA_DIR from old config files
         if grep -q "^PANELALPHA_DIR=" "$CONFIG_FILE" 2>/dev/null; then
@@ -413,6 +517,7 @@ Supports both PanelAlpha Control Panel and Engine
 
 📸 SNAPSHOT OPERATIONS:
   --snapshot            Create new snapshot
+  --snapshot-bg         Create new snapshot in background
   --test-connection     Test repository connection
 
 🔄 RESTORE OPERATIONS:
@@ -431,6 +536,7 @@ Supports both PanelAlpha Control Panel and Engine
   $0 --install                   # Install tools
   $0 --setup                     # Configure snapshot settings
   $0 --snapshot                  # Create snapshot
+  $0 --snapshot-bg               # Create snapshot in background
   $0 --test-connection           # Test repository connection
   $0 --restore latest            # Restore latest snapshot
   $0 --restore a1b2c3d4          # Restore specific snapshot
@@ -1017,6 +1123,12 @@ setup_config() {
         fi
     done
 
+    # Create configuration directory if it doesn't exist
+    if [[ ! -d "$CONFIG_DIR" ]]; then
+        mkdir -p "$CONFIG_DIR"
+        chmod 700 "$CONFIG_DIR"
+    fi
+
     # Create configuration file with proper permissions
     cat > "$CONFIG_FILE" << EOF
 # PanelAlpha Snapshot Configuration
@@ -1109,13 +1221,26 @@ create_database_snapshot() {
 
                     # Create database dump with enhanced options and error checking
                     local dump_file="$snapshot_dir/databases/panelalpha-core.sql"
-                    if timeout 300 docker exec "$core_container" \
+                    
+                    # Start dump in background and monitor progress
+                    timeout "$CORE_DUMP_TIMEOUT" docker exec "$core_container" \
                         mysqldump -u core -p"$core_password" core \
                         --single-transaction --routines --triggers --lock-tables=false \
                         --add-drop-database --create-options --disable-keys \
                         --extended-insert --quick --set-charset \
-                        > "$dump_file" 2>/dev/null; then
-
+                        > "$dump_file" 2>/dev/null &
+                    local dump_pid=$!
+                    
+                    # Monitor progress while dump is running
+                    log INFO "Creating Core database dump..."
+                    monitor_dump_progress "$dump_file" "Core database dump" "$CORE_DUMP_TIMEOUT" &
+                    local monitor_pid=$!
+                    
+                    # Wait for dump to complete
+                    if wait $dump_pid; then
+                        kill $monitor_pid 2>/dev/null || true
+                        wait $monitor_pid 2>/dev/null || true
+                        
                         # Verify snapshot file integrity
                         if verify_file_integrity "$dump_file" 1000; then
                             local core_size
@@ -1126,6 +1251,8 @@ create_database_snapshot() {
                             snapshot_success=false
                         fi
                     else
+                        kill $monitor_pid 2>/dev/null || true
+                        wait $monitor_pid 2>/dev/null || true
                         log ERROR "✗ Core database snapshot failed"
                         snapshot_success=false
                     fi
@@ -1161,19 +1288,93 @@ create_database_snapshot() {
                     log DEBUG "Users database connection verified"
 
                     # Create database dump (all databases)
-                    local dump_file="$snapshot_dir/databases/panelalpha-users.sql"
-                    if timeout 300 docker exec "$users_container" \
-                        mysqldump -u root -p"$users_password" --all-databases \
-                        --single-transaction --routines --triggers --lock-tables=false \
-                        --add-drop-database --create-options --disable-keys \
-                        --extended-insert --quick --set-charset \
-                        > "$dump_file" 2>/dev/null; then
+                    local dump_base="$snapshot_dir/databases/panelalpha-users.sql"
+                    local dump_file="$dump_base"
+                    local users_dump_compressed=false
 
+                    if command -v gzip &> /dev/null; then
+                        dump_file="${dump_base}.gz"
+                        users_dump_compressed=true
+                    fi
+
+                    local -a mysqldump_args=(
+                        mysqldump
+                        -u root
+                        --all-databases
+                        --single-transaction
+                        --routines
+                        --triggers
+                        --lock-tables=false
+                        --add-drop-database
+                        --create-options
+                        --disable-keys
+                        --extended-insert
+                        --quick
+                        --set-charset
+                        --tz-utc
+                        --hex-blob
+                        --max-allowed-packet=512M
+                    )
+
+                    local dump_success=false
+                    log INFO "Creating Users databases dump (this may take a while)..."
+                    
+                    if [[ "$users_dump_compressed" == true ]]; then
+                        # Start compressed dump in background
+                        timeout "$USERS_DUMP_TIMEOUT" docker exec -e MYSQL_PWD="$users_password" "$users_container" \
+                            sh -c "${mysqldump_args[*]} 2>/dev/null | gzip -c -${USERS_DUMP_COMPRESSION_LEVEL}" \
+                            > "$dump_file" 2>/dev/null &
+                        local dump_pid=$!
+                        
+                        # Monitor progress
+                        monitor_dump_progress "$dump_file" "Users databases dump (compressed)" "$USERS_DUMP_TIMEOUT" &
+                        local monitor_pid=$!
+                        
+                        if wait $dump_pid; then
+                            kill $monitor_pid 2>/dev/null || true
+                            wait $monitor_pid 2>/dev/null || true
+                            dump_success=true
+                        else
+                            kill $monitor_pid 2>/dev/null || true
+                            wait $monitor_pid 2>/dev/null || true
+                            log WARN "User database compression failed - retrying without compression"
+                            rm -f "$dump_file" 2>/dev/null || true
+                            users_dump_compressed=false
+                            dump_file="$dump_base"
+                        fi
+                    fi
+
+                    if [[ "$users_dump_compressed" == false && "$dump_success" == false ]]; then
+                        # Start uncompressed dump in background
+                        timeout "$USERS_DUMP_TIMEOUT" docker exec -e MYSQL_PWD="$users_password" "$users_container" \
+                            "${mysqldump_args[@]}" \
+                            > "$dump_file" 2>/dev/null &
+                        local dump_pid=$!
+                        
+                        # Monitor progress
+                        monitor_dump_progress "$dump_file" "Users databases dump" "$USERS_DUMP_TIMEOUT" &
+                        local monitor_pid=$!
+                        
+                        if wait $dump_pid; then
+                            kill $monitor_pid 2>/dev/null || true
+                            wait $monitor_pid 2>/dev/null || true
+                            dump_success=true
+                        else
+                            kill $monitor_pid 2>/dev/null || true
+                            wait $monitor_pid 2>/dev/null || true
+                        fi
+                    fi
+
+                    if [[ "$dump_success" == true ]]; then
                         # Verify snapshot file integrity
                         if verify_file_integrity "$dump_file" 1000; then
                             local users_size
                             users_size=$(stat -c%s "$dump_file" 2>/dev/null || echo "0")
-                            log INFO "✓ Users databases snapshot created ($(( users_size / 1024 )) KB)"
+                            if [[ "$users_dump_compressed" == true ]]; then
+                                log INFO "✓ Users databases snapshot created ($(( users_size / 1024 )) KB compressed)"
+                            else
+                                log INFO "✓ Users databases snapshot created ($(( users_size / 1024 )) KB)"
+                            fi
                         else
                             log ERROR "✗ Users databases snapshot is corrupted"
                             snapshot_success=false
@@ -1259,25 +1460,29 @@ create_database_snapshot() {
         log INFO "Database snapshots completed - size: $total_size"
 
         # Log database verification info
-        log DEBUG "Database snapshot verification:"
-        if [[ "$PANELALPHA_APP_TYPE" == "engine" ]]; then
-            if [[ -f "$snapshot_dir/databases/panelalpha-core.sql" ]]; then
-                local core_lines
-                core_lines=$(wc -l < "$snapshot_dir/databases/panelalpha-core.sql" 2>/dev/null || echo "0")
-                log DEBUG "  Core: $core_lines lines"
-            fi
-            if [[ -f "$snapshot_dir/databases/panelalpha-users.sql" ]]; then
-                local users_lines
-                users_lines=$(wc -l < "$snapshot_dir/databases/panelalpha-users.sql" 2>/dev/null || echo "0")
-                log DEBUG "  Users: $users_lines lines"
-            fi
-        else
-            if [[ -f "$snapshot_dir/databases/panelalpha-api.sql" ]]; then
-                local api_lines
-                api_lines=$(wc -l < "$snapshot_dir/databases/panelalpha-api.sql" 2>/dev/null || echo "0")
-                log DEBUG "  PanelAlpha: $api_lines lines"
-            fi
-        fi
+        # log DEBUG "Database snapshot verification:"
+        # if [[ "$PANELALPHA_APP_TYPE" == "engine" ]]; then
+        #     if [[ -f "$snapshot_dir/databases/panelalpha-core.sql" ]]; then
+        #         local core_lines
+        #         core_lines=$(wc -l < "$snapshot_dir/databases/panelalpha-core.sql" 2>/dev/null || echo "0")
+        #         log DEBUG "  Core: $core_lines lines"
+        #     fi
+        #     if [[ -f "$snapshot_dir/databases/panelalpha-users.sql.gz" ]]; then
+        #         local users_lines
+        #         users_lines=$(gzip -cd "$snapshot_dir/databases/panelalpha-users.sql.gz" 2>/dev/null | wc -l 2>/dev/null || echo "0")
+        #         log DEBUG "  Users: $users_lines lines (compressed)"
+        #     elif [[ -f "$snapshot_dir/databases/panelalpha-users.sql" ]]; then
+        #         local users_lines
+        #         users_lines=$(wc -l < "$snapshot_dir/databases/panelalpha-users.sql" 2>/dev/null || echo "0")
+        #         log DEBUG "  Users: $users_lines lines"
+        #     fi
+        # else
+        #     if [[ -f "$snapshot_dir/databases/panelalpha-api.sql" ]]; then
+        #         local api_lines
+        #         api_lines=$(wc -l < "$snapshot_dir/databases/panelalpha-api.sql" 2>/dev/null || echo "0")
+        #         log DEBUG "  PanelAlpha: $api_lines lines"
+        #     fi
+        # fi
         
         return 0
     else
@@ -1322,18 +1527,75 @@ create_volumes_snapshot() {
         if docker volume inspect "$full_volume_name" &> /dev/null; then
             log INFO "Creating snapshot of volume: $volume"
             
-            # Create volume snapshot using temporary container
-            if docker run --rm \
+            # Get volume size for reference
+            local vol_size
+            vol_size=$(docker system df -v 2>/dev/null | grep "$full_volume_name" | awk '{print $3}' || echo "unknown")
+            if [[ -n "$vol_size" && "$vol_size" != "unknown" ]]; then
+                log DEBUG "Volume size: $vol_size"
+            fi
+            
+            # Create volume snapshot using temporary container with better error handling
+            local tar_output
+            tar_output=$(mktemp)
+            local tar_file="$snapshot_dir/volumes/$volume.tar.gz"
+            
+            # Use tar with options to handle database files that may change during backup
+            # Run in background to monitor progress
+            docker run --rm \
                 -v "$full_volume_name":/source:ro \
                 -v "$snapshot_dir/volumes":/target \
                 ubuntu:20.04 \
-                tar czf "/target/$volume.tar.gz" -C /source . 2>/dev/null; then
-                
-                ((volumes_processed++))
-                log INFO "✓ Volume $volume snapshot created"
-            else
-                log WARN "✗ Failed to create snapshot for volume: $volume"
+                tar czf "/target/$volume.tar.gz" \
+                --warning=no-file-changed \
+                --ignore-failed-read \
+                -C /source . 2>"$tar_output" &
+            local tar_pid=$!
+            
+            # Monitor progress while tar is running
+            monitor_dump_progress "$tar_file" "Volume $volume snapshot" "$VOLUME_SNAPSHOT_TIMEOUT" &
+            local monitor_pid=$!
+            
+            # Wait for tar to complete
+            wait $tar_pid
+            local tar_exit_code=$?
+            
+            # Stop monitor
+            kill $monitor_pid 2>/dev/null || true
+            wait $monitor_pid 2>/dev/null || true
+            
+            # Check if tar file was created and has content
+            local tar_file_exists=false
+            local snap_size=0
+            if [[ -f "$tar_file" ]]; then
+                snap_size=$(stat -c%s "$tar_file" 2>/dev/null || echo "0")
+                if [[ $snap_size -gt 1000 ]]; then
+                    tar_file_exists=true
+                fi
             fi
+            
+            # Evaluate success based on file creation, not exit code
+            # tar exit code 1 means "some files changed during archive creation" - this is OK for database volumes
+            if [[ "$tar_file_exists" == true ]]; then
+                ((volumes_processed++))
+                log INFO "✓ Volume $volume snapshot created ($(( snap_size / 1024 )) KB)"
+            else
+                local error_msg
+                error_msg=$(cat "$tar_output" 2>/dev/null || echo "unknown error")
+                
+                if [[ -f "$tar_file" ]]; then
+                    # File exists but is too small
+                    log WARN "✗ Volume $volume snapshot file is too small (${snap_size} bytes)"
+                    rm -f "$tar_file"
+                else
+                    # File was not created at all
+                    log WARN "✗ Failed to create snapshot for volume: $volume"
+                    if [[ -n "$error_msg" ]]; then
+                        log DEBUG "Error details: $error_msg"
+                    fi
+                fi
+            fi
+            
+            rm -f "$tar_output" 2>/dev/null || true
         else
             log WARN "Volume $full_volume_name not found - skipping"
         fi
@@ -1389,16 +1651,20 @@ create_config_snapshot() {
     # Snapshot core configuration files
     local config_files=(
         "docker-compose.yml"
-        ".env-backup"
         "nginx.conf"
         "Dockerfile"
     )
     
-    # Add environment file based on application type
-    if [[ "$PANELALPHA_APP_TYPE" == "engine" ]]; then
-        config_files+=(".env-core")
-    else
-        config_files+=(".env")
+    # Always include the active environment file
+    config_files+=("$ENV_FILE_NAME")
+
+    # Snapshot pasnap configuration file
+    if [[ -f "$CONFIG_FILE" ]]; then
+        if cp "$CONFIG_FILE" "$snapshot_dir/config/.env-backup" 2>/dev/null; then
+            log DEBUG "✓ .env-backup snapshot created"
+        else
+            log WARN "✗ Failed to snapshot .env-backup"
+        fi
     fi
 
     for file in "${config_files[@]}"; do
@@ -1432,6 +1698,164 @@ create_config_snapshot() {
     log INFO "Configuration snapshot size: $config_size"
 
     return 0
+}
+
+create_users_snapshot() {
+    local snapshot_dir="$1"
+
+    if [[ "$PANELALPHA_APP_TYPE" != "engine" ]]; then
+        log DEBUG "Skipping user container snapshot for application type: $PANELALPHA_APP_TYPE"
+        return 0
+    fi
+
+    local users_source="${PANELALPHA_DIR}/users"
+    if [[ ! -d "$users_source" ]]; then
+        log INFO "No user container directory found at $users_source - skipping"
+        return 0
+    fi
+
+    local target_dir="$snapshot_dir/users"
+    mkdir -p "$target_dir"
+
+    log INFO "Creating user containers snapshot from $users_source..."
+    local users_snapshot_success=false
+    local rsync_exit_code=0
+
+    if command -v rsync &> /dev/null; then
+        # rsync may return non-zero exit code for various reasons, but snapshot may still be created
+        # Use timeout to prevent hanging on large directories
+        timeout "$USERS_HOME_SNAPSHOT_TIMEOUT" rsync -a "$users_source/" "$target_dir/" 2>/dev/null || rsync_exit_code=$?
+        
+        if [[ -d "$target_dir" ]] && [[ -n "$(find "$target_dir" -type f 2>/dev/null | head -1)" ]]; then
+            log INFO "✓ User container projects snapshot created"
+            users_snapshot_success=true
+        else
+            if [[ $rsync_exit_code -ne 0 ]]; then
+                log DEBUG "rsync exit code: $rsync_exit_code - will try fallback"
+            fi
+        fi
+    fi
+
+    # Fallback to cp if rsync failed or is not available
+    if [[ $users_snapshot_success == false ]]; then
+        if cp -a "$users_source/." "$target_dir/" 2>/dev/null; then
+            log INFO "✓ User container projects snapshot created (using cp fallback)"
+            users_snapshot_success=true
+        else
+            log ERROR "✗ Failed to snapshot user container projects"
+        fi
+    fi
+
+    local compose_status_file="$target_dir/container-status.txt"
+    : > "$compose_status_file"
+    local -a compose_files=()
+    mapfile -t compose_files < <(find "$users_source" -maxdepth 2 -type f -name "docker-compose.yml" 2>/dev/null || true)
+    if (( ${#compose_files[@]} > 0 )); then
+        for compose_file in "${compose_files[@]}"; do
+            local user_dir
+            user_dir=$(dirname "$compose_file")
+            local user_name
+            user_name=$(basename "$user_dir")
+            {
+                echo "[$user_name]"
+                docker compose -f "$compose_file" ps 2>/dev/null || echo "Unable to query container state"
+                echo
+            } >> "$compose_status_file"
+        done
+        log DEBUG "User container status saved to $compose_status_file"
+    else
+        rm -f "$compose_status_file"
+        log DEBUG "No user docker-compose.yml files detected"
+    fi
+
+    local users_size
+    users_size=$(du -sh "$target_dir" 2>/dev/null | cut -f1 || echo "0")
+    log INFO "User containers snapshot size: $users_size"
+
+    if [[ "$users_snapshot_success" == true ]]; then
+        return 0
+    fi
+
+    return 1
+}
+
+create_home_snapshot() {
+    local snapshot_dir="$1"
+
+    if [[ "$PANELALPHA_APP_TYPE" != "engine" ]]; then
+        log DEBUG "Skipping /home snapshot for application type: $PANELALPHA_APP_TYPE"
+        return 0
+    fi
+
+    local home_dir="/home"
+    if [[ ! -d "$home_dir" ]]; then
+        log WARN "/home directory not found - skipping snapshot"
+        return 0
+    fi
+
+    local target_dir="$snapshot_dir/home"
+    mkdir -p "$target_dir"
+
+    log INFO "Creating /home directory snapshot (this may take a while)..."
+    local home_snapshot_success=false
+    local rsync_exit_code=0
+
+    if command -v rsync &> /dev/null; then
+        # rsync may return exit code 23 if some files couldn't be read (normal for /home with various permissions)
+        # Use timeout to prevent hanging on large directories
+        timeout "$USERS_HOME_SNAPSHOT_TIMEOUT" rsync -a --numeric-ids "$home_dir/" "$target_dir/" 2>/dev/null || rsync_exit_code=$?
+        
+        # Exit codes 0, 23 (partial transfer due to error), and 24 (partial transfer due to vanished files) are acceptable
+        if [[ $rsync_exit_code -eq 0 || $rsync_exit_code -eq 23 || $rsync_exit_code -eq 24 ]]; then
+            if [[ -d "$target_dir" ]] && [[ -n "$(find "$target_dir" -type f 2>/dev/null | head -1)" ]]; then
+                log INFO "✓ /home snapshot created"
+                home_snapshot_success=true
+            fi
+        fi
+        
+        if [[ $home_snapshot_success == false ]]; then
+            log DEBUG "rsync exit code: $rsync_exit_code"
+            if [[ $rsync_exit_code -eq 12 ]]; then
+                log ERROR "✗ rsync error: out of memory"
+            elif [[ $rsync_exit_code -eq 30 ]]; then
+                log ERROR "✗ rsync error: timeout in data send/receive"
+            elif [[ -z "$(find "$target_dir" -type f 2>/dev/null | head -1)" ]]; then
+                log WARN "rsync transferred no files - /home may be empty"
+                home_snapshot_success=true
+            else
+                log WARN "rsync completed with non-critical errors (exit code $rsync_exit_code) - attempting fallback with cp"
+            fi
+        fi
+    fi
+
+    # Fallback to cp if rsync is not available or had issues
+    if [[ $home_snapshot_success == false ]] && [[ ! -z "$(find "$target_dir" -type f 2>/dev/null | head -1)" ]]; then
+        # Only fallback if rsync didn't already copy files
+        if cp -a "$home_dir/." "$target_dir/" 2>/dev/null; then
+            log INFO "✓ /home snapshot created (using cp fallback)"
+            home_snapshot_success=true
+        else
+            log ERROR "✗ Failed to snapshot /home directory (both rsync and cp failed)"
+        fi
+    elif [[ $home_snapshot_success == false ]] && command -v cp &> /dev/null; then
+        # Try cp if rsync completely failed
+        if cp -a "$home_dir/." "$target_dir/" 2>/dev/null; then
+            log INFO "✓ /home snapshot created (using cp)"
+            home_snapshot_success=true
+        else
+            log ERROR "✗ Failed to snapshot /home directory"
+        fi
+    fi
+
+    local home_size
+    home_size=$(du -sh "$target_dir" 2>/dev/null | cut -f1 || echo "0")
+    log INFO "/home snapshot size: $home_size"
+
+    if [[ "$home_snapshot_success" == true ]]; then
+        return 0
+    fi
+
+    return 1
 }
 
 # Main snapshot creation function with enhanced error handling
@@ -1479,6 +1903,16 @@ create_snapshot() {
         exit 1
     fi
 
+    if ! create_users_snapshot "$BACKUP_TEMP_DIR"; then
+        log ERROR "User container snapshot failed"
+        exit 1
+    fi
+
+    if ! create_home_snapshot "$BACKUP_TEMP_DIR"; then
+        log ERROR "/home snapshot failed"
+        exit 1
+    fi
+
     # Calculate total snapshot size and performance metrics
     local total_size
     total_size=$(du -sh "$BACKUP_TEMP_DIR" 2>/dev/null | cut -f1 || echo "unknown")
@@ -1518,13 +1952,15 @@ create_snapshot() {
     local upload_start
     upload_start=$(date +%s)
     
+    local restic_tags=(--tag "$BACKUP_TAG" --tag "databases" --tag "volumes" --tag "config")
+    if [[ "$PANELALPHA_APP_TYPE" == "engine" ]]; then
+        restic_tags+=(--tag "users" --tag "home")
+    fi
+
     local snapshot_result
     snapshot_result=$(restic backup "$BACKUP_TEMP_DIR" \
         --repo "$RESTIC_REPOSITORY" \
-        --tag "$BACKUP_TAG" \
-        --tag "databases" \
-        --tag "volumes" \
-        --tag "config" \
+        "${restic_tags[@]}" \
         --verbose \
         --json 2>/dev/null) || {
         log ERROR "Failed to create snapshot in repository"
@@ -1539,7 +1975,7 @@ create_snapshot() {
     # Extract and display snapshot ID with error checking
     local snapshot_id=""
     if [[ -n "$snapshot_result" ]]; then
-        snapshot_id=$(echo "$snapshot_result" | jq -r '.snapshot_id' 2>/dev/null || echo "")
+        snapshot_id=$(echo "$snapshot_result" | jq -r 'select(.snapshot_id != null) | .snapshot_id' 2>/dev/null | tail -n 1 || echo "")
     fi
 
     if [[ -n "$snapshot_id" && "$snapshot_id" != "null" ]]; then
@@ -1626,11 +2062,13 @@ Components Included:
 $(if [[ "$PANELALPHA_APP_TYPE" == "engine" ]]; then
     echo "- Databases (Core, Users)"
     echo "- Docker volumes (core-storage, database-core-data, database-users-data)"
-    echo "- Configuration files (docker-compose.yml, .env-core, packages/, SSL certificates)"
+    echo "- Configuration files (docker-compose.yml, $ENV_FILE_NAME, packages/, SSL certificates)"
+    echo "- User container projects (${PANELALPHA_DIR}/users)"
+    echo "- User home directories (/home)"
 else
     echo "- Databases (PanelAlpha API)"
     echo "- Docker volumes (api-storage, database-api-data, redis-data)"
-    echo "- Configuration files (docker-compose.yml, .env, packages/, SSL certificates)"
+    echo "- Configuration files (docker-compose.yml, $ENV_FILE_NAME, packages/, SSL certificates)"
 fi)
 
 Verification:
@@ -2199,24 +2637,41 @@ restore_databases() {
         fi
 
         # Step 5: Restore Users database
-        if [[ -f "$data_dir/databases/panelalpha-users.sql" && -n "$users_password" ]]; then
+        local users_dump_file=""
+        if [[ -f "$data_dir/databases/panelalpha-users.sql.gz" ]]; then
+            users_dump_file="$data_dir/databases/panelalpha-users.sql.gz"
+        elif [[ -f "$data_dir/databases/panelalpha-users.sql" ]]; then
+            users_dump_file="$data_dir/databases/panelalpha-users.sql"
+        fi
+
+        if [[ -n "$users_dump_file" && -n "$users_password" ]]; then
             log INFO "Found Users database snapshot and password"
             # For users database, we restore all databases as root
             local users_container=$(docker compose ps -q database-users)
             if [[ -n "$users_container" ]]; then
-                log INFO "Importing Users databases dump..."
-                if docker exec -i "$users_container" mysql -u root -p"$users_password" < "$data_dir/databases/panelalpha-users.sql" 2>/dev/null; then
-                    log INFO "✓ Users databases imported successfully"
+                if [[ "$users_dump_file" == *.gz ]]; then
+                    log INFO "Importing Users databases dump (compressed)..."
+                    if gunzip -c "$users_dump_file" | docker exec -i "$users_container" mysql -u root -p"$users_password" 2>/dev/null; then
+                        log INFO "✓ Users databases imported successfully"
+                    else
+                        log ERROR "✗ Users databases import failed"
+                        return 1
+                    fi
                 else
-                    log ERROR "✗ Users databases import failed"
-                    return 1
+                    log INFO "Importing Users databases dump..."
+                    if docker exec -i "$users_container" mysql -u root -p"$users_password" < "$users_dump_file" 2>/dev/null; then
+                        log INFO "✓ Users databases imported successfully"
+                    else
+                        log ERROR "✗ Users databases import failed"
+                        return 1
+                    fi
                 fi
             else
                 log ERROR "Users database container not found"
                 return 1
             fi
         else
-            if [[ ! -f "$data_dir/databases/panelalpha-users.sql" ]]; then
+            if [[ -z "$users_dump_file" ]]; then
                 log WARN "Users database snapshot file not found"
             fi
             if [[ -z "$users_password" ]]; then
@@ -2401,25 +2856,25 @@ restore_config() {
             fi
         fi
 
-        # Restore .env file directly from backup based on app type
-        if [[ "$PANELALPHA_APP_TYPE" == "engine" ]]; then
-            if [[ -f "$data_dir/config/.env-core" ]]; then
-                log INFO "Restoring .env-core configuration from backup..."
-                cp "$data_dir/config/.env-core" .env-core
-                log INFO ".env-core file restored from backup ✓"
-                rm -f .env-core.current-backup
-            else
-                log WARN "No .env-core file found in backup, keeping current configuration"
+        # Restore environment file (supports legacy .env-core backups)
+        local snapshot_env_file="$data_dir/config/$ENV_FILE_NAME"
+        local restore_env_target="$ENV_FILE_NAME"
+
+        if [[ ! -f "$snapshot_env_file" && "$PANELALPHA_APP_TYPE" == "engine" && "$ENV_FILE_NAME" == ".env" ]]; then
+            local legacy_env_file="$data_dir/config/.env-core"
+            if [[ -f "$legacy_env_file" ]]; then
+                snapshot_env_file="$legacy_env_file"
+                restore_env_target=".env-core"
             fi
+        fi
+
+        if [[ -f "$snapshot_env_file" ]]; then
+            log INFO "Restoring ${restore_env_target} configuration from backup..."
+            cp "$snapshot_env_file" "$restore_env_target"
+            log INFO "${restore_env_target} file restored from backup ✓"
+            rm -f "${restore_env_target}.current-backup"
         else
-            if [[ -f "$data_dir/config/.env" ]]; then
-                log INFO "Restoring .env configuration from backup..."
-                cp "$data_dir/config/.env" .env
-                log INFO ".env file restored from backup ✓"
-                rm -f .env.current-backup
-            else
-                log WARN "No .env file found in backup, keeping current configuration"
-            fi
+            log WARN "No ${restore_env_target} file found in backup, keeping current configuration"
         fi
 
         # Restore SSL certificates
@@ -2431,6 +2886,91 @@ restore_config() {
     fi
 
     log INFO "Configuration files restored from backup ✓"
+}
+
+restore_users() {
+    local data_dir="$1"
+
+    if [[ "$PANELALPHA_APP_TYPE" != "engine" ]]; then
+        log DEBUG "Skipping user container restore for application type: $PANELALPHA_APP_TYPE"
+        return 0
+    fi
+
+    local source_dir="$data_dir/users"
+    if [[ ! -d "$source_dir" ]]; then
+        log INFO "No user container data found in snapshot - skipping"
+        return 0
+    fi
+
+    local target_dir="${PANELALPHA_DIR}/users"
+    mkdir -p "$target_dir"
+
+    log INFO "Restoring user container projects to $target_dir"
+    local users_restore_success=true
+
+    if command -v rsync &> /dev/null; then
+        if rsync -a "$source_dir/" "$target_dir/" 2>/dev/null; then
+            log INFO "✓ User container projects restored"
+        else
+            log ERROR "✗ Failed to restore user container projects with rsync"
+            users_restore_success=false
+        fi
+    else
+        if cp -a "$source_dir/." "$target_dir/" 2>/dev/null; then
+            log INFO "✓ User container projects restored (using cp)"
+        else
+            log ERROR "✗ Failed to restore user container projects"
+            users_restore_success=false
+        fi
+    fi
+
+    if [[ "$users_restore_success" == true ]]; then
+        return 0
+    fi
+
+    return 1
+}
+
+restore_home_directory() {
+    local data_dir="$1"
+
+    if [[ "$PANELALPHA_APP_TYPE" != "engine" ]]; then
+        log DEBUG "Skipping /home restore for application type: $PANELALPHA_APP_TYPE"
+        return 0
+    fi
+
+    local source_dir="$data_dir/home"
+    if [[ ! -d "$source_dir" ]]; then
+        log INFO "No /home snapshot found - skipping"
+        return 0
+    fi
+
+    mkdir -p /home
+
+    log INFO "Restoring /home directory (existing files may be overwritten)..."
+    local home_restore_success=true
+
+    if command -v rsync &> /dev/null; then
+        if rsync -a --numeric-ids "$source_dir/" "/home/" 2>/dev/null; then
+            log INFO "✓ /home directory restored"
+        else
+            log ERROR "✗ Failed to restore /home directory with rsync"
+            home_restore_success=false
+        fi
+    else
+        if cp -a "$source_dir/." "/home/" 2>/dev/null; then
+            log INFO "✓ /home directory restored (using cp)"
+        else
+            log ERROR "✗ Failed to restore /home directory"
+            home_restore_success=false
+        fi
+    fi
+
+    if [[ "$home_restore_success" == true ]]; then
+        return 0
+    fi
+
+    return 1
 }
 
 restore_from_snapshot() {
@@ -2500,15 +3040,30 @@ restore_from_snapshot() {
     log INFO "Restoring volumes..."
     restore_volumes "$data_dir"
 
-    # Step 7: Start all services
+    # Step 7 & 8: Restore user data for engine deployments
+    if [[ "$PANELALPHA_APP_TYPE" == "engine" ]]; then
+        log INFO "Restoring user container projects..."
+        if ! restore_users "$data_dir"; then
+            log ERROR "User container restore failed"
+            exit 1
+        fi
+
+        log INFO "Restoring /home directory..."
+        if ! restore_home_directory "$data_dir"; then
+            log ERROR "/home directory restore failed"
+            exit 1
+        fi
+    fi
+
+    # Step 9: Start all services
     log INFO "Starting all PanelAlpha services..."
     docker compose up -d
 
-    # Step 8: Wait for services to be ready
+    # Step 10: Wait for services to be ready
     log INFO "Waiting for services to start..."
     sleep 30
 
-    # Step 9: Verify restoration
+    # Step 11: Verify restoration
     log INFO "Verifying restoration..."
     if docker compose ps | grep -q "Up"; then
         log INFO "✓ PanelAlpha services are running"
@@ -2696,6 +3251,29 @@ main() {
         --snapshot)
             log INFO "📸 Starting snapshot creation..."
             create_snapshot
+            ;;
+        --snapshot-bg)
+            log INFO "📸 Starting snapshot creation in background..."
+            # Run snapshot in background with nohup to survive terminal closure
+            nohup bash -c "exec $0 --snapshot" >> "$LOG_FILE" 2>&1 &
+            local nohup_pid=$!
+            disown $nohup_pid 2>/dev/null || true
+            
+            # Wait a moment for the actual bash process to spawn
+            sleep 0.5
+            
+            # Find the actual snapshot bash process (child of nohup)
+            local bg_pid
+            bg_pid=$(pgrep -P "$nohup_pid" 2>/dev/null || echo "$nohup_pid")
+            
+            # If still not found, use nohup PID
+            if [[ -z "$bg_pid" ]]; then
+                bg_pid=$nohup_pid
+            fi
+            
+            log INFO "📸 Snapshot process started in background (PID: $bg_pid)"
+            log INFO "💡 Process will continue even if terminal closes"
+            log INFO "💡 Check progress with: tail -f $LOG_FILE"
             ;;
         --test-connection)
             log INFO "🔍 Testing repository connection..."
