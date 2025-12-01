@@ -1,0 +1,49 @@
+site_name: PanelAlpha Snapshot Tool
+site_description: Secure Snapshots for PanelAlpha
+site_url: https://panelalpha.github.io/PanelAlpha-Snapshot-Tool/
+
+repo_name: panelalpha/PanelAlpha-Snapshot-Tool
+repo_url: https://github.com/panelalpha/PanelAlpha-Snapshot-Tool
+
+theme:
+  name: material
+  palette:
+    - scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  features:
+    - navigation.instant
+    - navigation.tracking
+    - navigation.sections
+    - toc.integrate
+    - search.suggest
+    - content.code.copy
+
+nav:
+  - Home: README.md
+  - Installation: installation.md
+  - Storage Backends: storage-backends.md
+  - Usage & Commands: usage.md
+  - Server Migration: migration.md
+  - Configuration: configuration.md
+  - Troubleshooting: troubleshooting.md
+
+docs_dir: docs
+
+markdown_extensions:
+  - admonition
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - tables
