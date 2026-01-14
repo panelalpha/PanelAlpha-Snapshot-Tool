@@ -10,9 +10,12 @@ set -euo pipefail
 # CONFIGURATION CONSTANTS
 # ======================
 
-readonly SCRIPT_VERSION="1.2.0"
+readonly SCRIPT_VERSION="1.2.1"
 readonly SCRIPT_NAME="PanelAlpha Snapshot & Restore Tool"
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Ensure cron runs have access to standard system binaries.
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin${PATH:+:$PATH}"
 
 # Detect PanelAlpha installation type and set paths accordingly
 detect_panelalpha_type() {
@@ -195,6 +198,18 @@ verify_file_integrity() {
 
 # Log messages with timestamp and appropriate formatting
 # Usage: log LEVEL "message"
+log_file_matches_fd() {
+    local log_path="$1"
+    local fd="$2"
+    local log_stat
+    local fd_stat
+
+    log_stat=$(stat -Lc '%d:%i' "$log_path" 2>/dev/null || true)
+    fd_stat=$(stat -Lc '%d:%i' "/proc/$$/fd/$fd" 2>/dev/null || true)
+
+    [[ -n "$log_stat" && "$log_stat" == "$fd_stat" ]]
+}
+
 log() {
     local level=$1
     shift
@@ -210,9 +225,11 @@ log() {
         *)     echo -e "[$timestamp] $level: $message" ;;
     esac
     
-    # Also log to file if LOG_FILE is set and writable
+    # Also log to file if LOG_FILE is set and writable and not already redirected there
     if [[ -n "${LOG_FILE:-}" ]] && [[ -w "$(dirname "$LOG_FILE")" || -w "$LOG_FILE" ]]; then
-        echo "[$timestamp] $level: $message" >> "$LOG_FILE"
+        if ! log_file_matches_fd "$LOG_FILE" 1 && ! log_file_matches_fd "$LOG_FILE" 2; then
+            echo "[$timestamp] $level: $message" >> "$LOG_FILE"
+        fi
     fi
 }
 
@@ -1799,51 +1816,69 @@ create_home_snapshot() {
     log INFO "Creating /home directory snapshot (this may take a while)..."
     local home_snapshot_success=false
     local rsync_exit_code=0
+    local rsync_has_files=false
 
     if command -v rsync &> /dev/null; then
         # rsync may return exit code 23 if some files couldn't be read (normal for /home with various permissions)
         # Use timeout to prevent hanging on large directories
         timeout "$USERS_HOME_SNAPSHOT_TIMEOUT" rsync -a --numeric-ids "$home_dir/" "$target_dir/" 2>/dev/null || rsync_exit_code=$?
-        
-        # Exit codes 0, 23 (partial transfer due to error), and 24 (partial transfer due to vanished files) are acceptable
-        if [[ $rsync_exit_code -eq 0 || $rsync_exit_code -eq 23 || $rsync_exit_code -eq 24 ]]; then
-            if [[ -d "$target_dir" ]] && [[ -n "$(find "$target_dir" -type f 2>/dev/null | head -1)" ]]; then
-                log INFO "✓ /home snapshot created"
-                home_snapshot_success=true
-            fi
+
+        if [[ -d "$target_dir" ]] && [[ -n "$(find "$target_dir" -type f 2>/dev/null | head -1)" ]]; then
+            rsync_has_files=true
         fi
-        
-        if [[ $home_snapshot_success == false ]]; then
+
+        if [[ $rsync_exit_code -eq 0 ]]; then
+            if [[ $rsync_has_files == true ]]; then
+                log INFO "✓ /home snapshot created"
+            else
+                log WARN "rsync transferred no files - /home may be empty"
+            fi
+            home_snapshot_success=true
+        elif [[ $rsync_has_files == true ]]; then
+            case $rsync_exit_code in
+                23|24)
+                    log WARN "rsync completed with partial errors (exit code $rsync_exit_code) - snapshot may be incomplete"
+                    ;;
+                12)
+                    log WARN "rsync exited with out-of-memory (exit code $rsync_exit_code) - snapshot may be incomplete"
+                    ;;
+                30)
+                    log WARN "rsync exited due to timeout in data send/receive (exit code $rsync_exit_code) - snapshot may be incomplete"
+                    ;;
+                124|137)
+                    log WARN "rsync timed out (exit code $rsync_exit_code) - snapshot may be incomplete"
+                    ;;
+                *)
+                    log WARN "rsync exited with code $rsync_exit_code - snapshot may be incomplete"
+                    ;;
+            esac
+            home_snapshot_success=true
+        else
             log DEBUG "rsync exit code: $rsync_exit_code"
             if [[ $rsync_exit_code -eq 12 ]]; then
                 log ERROR "✗ rsync error: out of memory"
             elif [[ $rsync_exit_code -eq 30 ]]; then
                 log ERROR "✗ rsync error: timeout in data send/receive"
-            elif [[ -z "$(find "$target_dir" -type f 2>/dev/null | head -1)" ]]; then
-                log WARN "rsync transferred no files - /home may be empty"
-                home_snapshot_success=true
+            elif [[ $rsync_exit_code -eq 124 || $rsync_exit_code -eq 137 ]]; then
+                log ERROR "✗ rsync error: timeout reached"
             else
-                log WARN "rsync completed with non-critical errors (exit code $rsync_exit_code) - attempting fallback with cp"
+                log WARN "rsync failed (exit code $rsync_exit_code) - attempting fallback with cp"
             fi
         fi
     fi
 
     # Fallback to cp if rsync is not available or had issues
-    if [[ $home_snapshot_success == false ]] && [[ ! -z "$(find "$target_dir" -type f 2>/dev/null | head -1)" ]]; then
-        # Only fallback if rsync didn't already copy files
+    if [[ $home_snapshot_success == false ]]; then
         if cp -a "$home_dir/." "$target_dir/" 2>/dev/null; then
             log INFO "✓ /home snapshot created (using cp fallback)"
             home_snapshot_success=true
         else
-            log ERROR "✗ Failed to snapshot /home directory (both rsync and cp failed)"
-        fi
-    elif [[ $home_snapshot_success == false ]] && command -v cp &> /dev/null; then
-        # Try cp if rsync completely failed
-        if cp -a "$home_dir/." "$target_dir/" 2>/dev/null; then
-            log INFO "✓ /home snapshot created (using cp)"
-            home_snapshot_success=true
-        else
-            log ERROR "✗ Failed to snapshot /home directory"
+            if [[ -n "$(find "$target_dir" -type f 2>/dev/null | head -1)" ]]; then
+                log WARN "cp fallback failed, but /home snapshot contains data"
+                home_snapshot_success=true
+            else
+                log ERROR "✗ Failed to snapshot /home directory (both rsync and cp failed)"
+            fi
         fi
     fi
 

@@ -5,6 +5,14 @@ All notable changes to PanelAlpha Snapshot Tool will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.1] - 2026-01-14
+
+### Fixed
+- Prevented duplicate log entries when output is redirected to the same file as `LOG_FILE` (cron/nohup runs)
+- Avoided false `/home` snapshot failures when rsync copies data but exits with non-zero status
+- Improved `/home` snapshot fallback logic and rsync timeout/error messaging
+- Normalized PATH for cron runs so Restic/Docker/rsync binaries are discoverable
+
 ## [1.2.0] - 2025-11-19
 
 ### Added
@@ -136,6 +144,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+[1.2.1]: https://github.com/panelalpha/PanelAlpha-Snapshot-Tool/compare/v1.2.0...v1.2.1
+[1.2.0]: https://github.com/panelalpha/PanelAlpha-Snapshot-Tool/compare/v1.1.0...v1.2.0
 [1.1.1]: https://github.com/panelalpha/PanelAlpha-Snapshot-Tool/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/panelalpha/PanelAlpha-Snapshot-Tool/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/panelalpha/PanelAlpha-Snapshot-Tool/releases/tag/v1.0.0
