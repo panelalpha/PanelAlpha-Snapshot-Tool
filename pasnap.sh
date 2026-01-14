@@ -371,12 +371,27 @@ check_for_updates() {
     if [[ "${PASNAP_SKIP_UPDATE_CHECK:-0}" == "1" ]]; then
         return 0
     fi
+    local auto_update="${PASNAP_AUTO_UPDATE:-}"
+    local disable_auto_update="${PASNAP_DISABLE_AUTO_UPDATE:-0}"
+    local force_check="${PASNAP_FORCE_UPDATE_CHECK:-0}"
+    local is_interactive=true
+
+    if [[ ! -t 0 ]]; then
+        is_interactive=false
+        if [[ -z "$auto_update" && "$disable_auto_update" != "1" ]]; then
+            auto_update="1"
+        fi
+        if [[ "$auto_update" != "1" ]]; then
+            log DEBUG "Non-interactive session detected - skipping update check (set PASNAP_AUTO_UPDATE=1 to enable)"
+            return 0
+        fi
+    fi
 
     # Only check once per day
     local update_check_file="/var/tmp/.pasnap_last_update_check"
     local current_time=$(date +%s)
     
-    if [[ -f "$update_check_file" ]]; then
+    if [[ "$force_check" != "1" && -f "$update_check_file" ]]; then
         local last_check=$(cat "$update_check_file" 2>/dev/null || echo "0")
         local time_diff=$((current_time - last_check))
         # 86400 seconds = 24 hours
@@ -420,12 +435,22 @@ check_for_updates() {
         echo "  Current version: $SCRIPT_VERSION"
         echo "  Latest version:  $remote_version"
         echo ""
-        
-        # Ask user if they want to update
-        read -p "  Do you want to update now? (y/n): " -n 1 -r
-        echo ""
-        
-        if [[ $REPLY =~ ^[Yy]$ ]]; then
+
+        local should_update=false
+        if [[ "$auto_update" == "1" ]]; then
+            log INFO "Auto-update enabled - updating to version $remote_version..."
+            should_update=true
+        elif [[ "$is_interactive" == true ]]; then
+            # Ask user if they want to update
+            read -p "  Do you want to update now? (y/n): " -n 1 -r
+            echo ""
+
+            if [[ $REPLY =~ ^[Yy]$ ]]; then
+                should_update=true
+            fi
+        fi
+
+        if [[ "$should_update" == true ]]; then
             log INFO "Updating script to version $remote_version..."
             
             # Create backup of current script
@@ -503,6 +528,8 @@ check_for_updates() {
             echo "  chmod +x pasnap.sh"
             echo ""
             log INFO "To skip update check, set: export PASNAP_SKIP_UPDATE_CHECK=1"
+            log INFO "To enable auto update, set: export PASNAP_AUTO_UPDATE=1"
+            log INFO "To disable auto update in cron, set: export PASNAP_DISABLE_AUTO_UPDATE=1"
             echo ""
             sleep 2
         fi
@@ -546,6 +573,7 @@ Supports both PanelAlpha Control Panel and Engine
   --cron [install|remove|status]  Manage automatic snapshot creation
 
 ℹ️  OTHER:
+  --update              Force update to latest version (no prompt)
   --help, -h            Show this help
   --version             Show version information
 
@@ -561,6 +589,7 @@ Supports both PanelAlpha Control Panel and Engine
   $0 --delete-snapshots a1b2c3d4 # Delete specific snapshot
   $0 --cron install              # Set up automatic snapshots
   $0 --cron status               # Check automation status
+  $0 --update                    # Force update to latest version
 
 🔧 SYSTEM REQUIREMENTS:
   - Ubuntu 18.04+ or compatible Linux
@@ -3254,6 +3283,12 @@ show_cron_status() {
 main() {
     # Set up error handling
     set -euo pipefail
+
+    if [[ "${1:-}" == "--update" ]]; then
+        log INFO "🔄 Forcing update check..."
+        PASNAP_SKIP_UPDATE_CHECK=0 PASNAP_FORCE_UPDATE_CHECK=1 PASNAP_AUTO_UPDATE=1 PASNAP_DISABLE_AUTO_UPDATE=0 check_for_updates "$@"
+        exit 0
+    fi
     
     # Check for updates before running any commands
     # This may restart the script with new version if user accepts update

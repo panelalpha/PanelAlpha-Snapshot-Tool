@@ -7,11 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [1.2.1] - 2026-01-14
 
+### Added
+- `--update` command to force an immediate update without prompts
+
 ### Fixed
 - Prevented duplicate log entries when output is redirected to the same file as `LOG_FILE` (cron/nohup runs)
 - Avoided false `/home` snapshot failures when rsync copies data but exits with non-zero status
 - Improved `/home` snapshot fallback logic and rsync timeout/error messaging
 - Normalized PATH for cron runs so Restic/Docker/rsync binaries are discoverable
+- Enabled auto-update by default in non-interactive runs (cron) with opt-out via `PASNAP_DISABLE_AUTO_UPDATE=1` and support for `PASNAP_AUTO_UPDATE=1`
 
 ## [1.2.0] - 2025-11-19
 
