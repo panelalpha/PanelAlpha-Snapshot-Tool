@@ -5,6 +5,35 @@ All notable changes to PanelAlpha Snapshot Tool will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.2] - 2026-04-03
+
+### Fixed
+- **Engine wp-config.php content loss**: Fixed critical issue where snapshots for Engine installations could cause wp-config.php to lose database credentials by ensuring BOTH `.env` and `.env-core` files are backed up and restored together
+- **Arithmetic operations with `set -e`**: Fixed 8 instances of `((var++))` causing script to exit when variable is 0, changed to safe `var=$((var + 1))` syntax
+- **Division by zero in progress bar**: Fixed `show_progress()` function to handle `total=0` case that could cause arithmetic errors
+- **Line endings**: Converted file from CRLF to LF (Unix) line endings
+
+### Changed
+- **Simplified update code**: Extracted duplicate curl/wget download logic into `download_and_apply_update()` helper function, reducing ~40 lines of duplicate code
+- **Environment file handling**: Modified `create_config_snapshot()` to backup ALL environment files (`.env` and `.env-core`) if they exist
+- **Environment file restoration**: Modified `restore_config()` to restore ALL environment files found in snapshot
+
+### Added
+- **Editor configuration**: Added `.editorconfig` file with project coding standards (UTF-8, LF line endings, 4-space indentation for shell scripts)
+- **AI agent context**: Added `AGENTS.md` with comprehensive project context for AI agents
+- **Skills documentation**: Added `skills/` directory with specialized skill modules:
+  - `bash-scripting/` - Bash patterns and best practices
+  - `docker-operations/` - Docker container operations
+  - `database-management/` - MySQL/MariaDB operations
+  - `restic-backup/` - Restic backup operations
+  - `testing-validation/` - Testing procedures
+- **Code examples**: Added example scripts in `skills/*/examples/` directories
+
+### Technical Details
+- All arithmetic increments now use POSIX-compliant syntax for `set -euo pipefail` compatibility
+- Environment file operations now handle both `.env` and `.env-core` atomically
+- Created centralized skill system for AI agent assistance
+
 ## [1.2.1] - 2026-01-14
 
 ### Added
@@ -148,6 +177,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+[1.2.2]: https://github.com/panelalpha/PanelAlpha-Snapshot-Tool/compare/v1.2.1...v1.2.2
 [1.2.1]: https://github.com/panelalpha/PanelAlpha-Snapshot-Tool/compare/v1.2.0...v1.2.1
 [1.2.0]: https://github.com/panelalpha/PanelAlpha-Snapshot-Tool/compare/v1.1.0...v1.2.0
 [1.1.1]: https://github.com/panelalpha/PanelAlpha-Snapshot-Tool/compare/v1.1.0...v1.1.1
