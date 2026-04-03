@@ -10,7 +10,7 @@ set -euo pipefail
 # CONFIGURATION CONSTANTS
 # ======================
 
-readonly SCRIPT_VERSION="1.2.1"
+readonly SCRIPT_VERSION="1.2.2"
 readonly SCRIPT_NAME="PanelAlpha Snapshot & Restore Tool"
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -238,16 +238,22 @@ show_progress() {
     local current="$1"
     local total="$2"
     local description="$3"
-    
+
+    # Prevent division by zero
+    if [[ $total -eq 0 ]]; then
+        printf "\r%s [░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░] 0%% (0/0)\n" "$description"
+        return 0
+    fi
+
     local percentage=$((current * 100 / total))
     local completed=$((current * 50 / total))
     local remaining=$((50 - completed))
-    
+
     printf "\r%s [" "$description"
     printf "%*s" $completed | tr ' ' '█'
     printf "%*s" $remaining | tr ' ' '░'
     printf "] %d%% (%d/%d)" $percentage $current $total
-    
+
     if [[ $current -eq $total ]]; then
         echo " ✓"
     fi
@@ -296,8 +302,8 @@ monitor_dump_progress() {
             stall_count=0
         else
             # File not growing - might be finished or stalled
-            ((stall_count++))
-            
+            stall_count=$((stall_count + 1))
+
             if [[ $stall_count -gt 5 ]]; then
                 # File hasn't grown for 5 seconds, probably finished
                 local size_mb=$((current_size / 1024 / 1024))
@@ -364,6 +370,39 @@ load_configuration
 # ======================
 # VERSION CHECK FUNCTIONS
 # ======================
+
+# Helper function to download and apply update
+# Usage: download_and_apply_update <temp_file> <backup_file> <remote_version>
+download_and_apply_update() {
+    local temp_file="$1"
+    local backup_file="$2"
+    local remote_version="$3"
+    shift 3
+
+    # Verify download
+    if [[ -s "$temp_file" ]] && grep -q "SCRIPT_VERSION" "$temp_file"; then
+        if mv "$temp_file" "${SCRIPT_DIR}/pasnap.sh" 2>/dev/null; then
+            chmod +x "${SCRIPT_DIR}/pasnap.sh"
+            echo ""
+            log INFO "✓ Update successful! Script updated to version $remote_version"
+            log INFO "Previous version backed up to: $backup_file"
+            echo ""
+            log INFO "Restarting script with new version..."
+            echo ""
+            sleep 2
+            # Re-execute script with same arguments
+            exec "${SCRIPT_DIR}/pasnap.sh" "$@"
+        else
+            log ERROR "Failed to replace script file (permission denied?)"
+            rm -f "$temp_file"
+            return 1
+        fi
+    else
+        log ERROR "Downloaded file appears corrupted"
+        rm -f "$temp_file"
+        return 1
+    fi
+}
 
 # Check for script updates
 check_for_updates() {
@@ -452,7 +491,7 @@ check_for_updates() {
 
         if [[ "$should_update" == true ]]; then
             log INFO "Updating script to version $remote_version..."
-            
+
             # Create backup of current script
             local backup_file="${SCRIPT_DIR}/pasnap.sh.backup-$(date +%Y%m%d-%H%M%S)"
             if cp "${SCRIPT_DIR}/pasnap.sh" "$backup_file" 2>/dev/null; then
@@ -460,65 +499,29 @@ check_for_updates() {
             else
                 log WARN "Could not create backup"
             fi
-            
+
             # Download new version
-            local temp_file=$(mktemp)
+            local temp_file
+            temp_file=$(mktemp)
+            local download_success=false
+
             if command -v curl &> /dev/null; then
                 if curl -sL "$github_raw_url" -o "$temp_file" 2>/dev/null; then
-                    # Verify download
-                    if [[ -s "$temp_file" ]] && grep -q "SCRIPT_VERSION" "$temp_file"; then
-                        if mv "$temp_file" "${SCRIPT_DIR}/pasnap.sh" 2>/dev/null; then
-                            chmod +x "${SCRIPT_DIR}/pasnap.sh"
-                            echo ""
-                            log INFO "✓ Update successful! Script updated to version $remote_version"
-                            log INFO "Previous version backed up to: $backup_file"
-                            echo ""
-                            log INFO "Restarting script with new version..."
-                            echo ""
-                            sleep 2
-                            # Re-execute script with same arguments
-                            exec "${SCRIPT_DIR}/pasnap.sh" "$@"
-                        else
-                            log ERROR "Failed to replace script file (permission denied?)"
-                            rm -f "$temp_file"
-                        fi
-                    else
-                        log ERROR "Downloaded file appears corrupted"
-                        rm -f "$temp_file"
-                    fi
-                else
-                    log ERROR "Failed to download update"
-                    rm -f "$temp_file"
+                    download_success=true
                 fi
             elif command -v wget &> /dev/null; then
                 if wget -q "$github_raw_url" -O "$temp_file" 2>/dev/null; then
-                    # Verify download
-                    if [[ -s "$temp_file" ]] && grep -q "SCRIPT_VERSION" "$temp_file"; then
-                        if mv "$temp_file" "${SCRIPT_DIR}/pasnap.sh" 2>/dev/null; then
-                            chmod +x "${SCRIPT_DIR}/pasnap.sh"
-                            echo ""
-                            log INFO "✓ Update successful! Script updated to version $remote_version"
-                            log INFO "Previous version backed up to: $backup_file"
-                            echo ""
-                            log INFO "Restarting script with new version..."
-                            echo ""
-                            sleep 2
-                            # Re-execute script with same arguments
-                            exec "${SCRIPT_DIR}/pasnap.sh" "$@"
-                        else
-                            log ERROR "Failed to replace script file (permission denied?)"
-                            rm -f "$temp_file"
-                        fi
-                    else
-                        log ERROR "Downloaded file appears corrupted"
-                        rm -f "$temp_file"
-                    fi
-                else
-                    log ERROR "Failed to download update"
-                    rm -f "$temp_file"
+                    download_success=true
                 fi
             else
                 log ERROR "Neither curl nor wget available for update"
+            fi
+
+            if [[ "$download_success" == true ]]; then
+                download_and_apply_update "$temp_file" "$backup_file" "$remote_version" "$@"
+            else
+                log ERROR "Failed to download update"
+                rm -f "$temp_file"
             fi
         else
             echo ""
@@ -717,7 +720,7 @@ install_dependencies() {
                 log INFO "All packages installed successfully ✓"
                 break
             else
-                ((retry_count++))
+                retry_count=$((retry_count + 1))
                 if [[ $retry_count -lt $MAX_RETRY_ATTEMPTS ]]; then
                     log WARN "Package installation failed, retrying ($retry_count/$MAX_RETRY_ATTEMPTS)..."
                     sleep 5
@@ -1251,7 +1254,7 @@ create_database_snapshot() {
 
         # Snapshot Core database
         if [[ -n "$core_password" ]]; then
-            ((current_step++))
+            current_step=$((current_step + 1))
             show_progress $current_step $total_steps "Creating Core database snapshot"
             
             local core_container
@@ -1316,7 +1319,7 @@ create_database_snapshot() {
         # Snapshot Users database (all databases from users container)
         if [[ -n "$users_password" ]]; then
             if [[ -n "$core_password" ]]; then
-                ((current_step++))
+                current_step=$((current_step + 1))
             else
                 current_step=$total_steps
             fi
@@ -1452,7 +1455,7 @@ create_database_snapshot() {
 
         # Snapshot PanelAlpha database
         if [[ -n "$api_password" ]]; then
-            ((current_step++))
+            current_step=$((current_step + 1))
             show_progress $current_step $total_steps "Creating PanelAlpha database snapshot"
             
             local api_container
@@ -1622,7 +1625,7 @@ create_volumes_snapshot() {
             # Evaluate success based on file creation, not exit code
             # tar exit code 1 means "some files changed during archive creation" - this is OK for database volumes
             if [[ "$tar_file_exists" == true ]]; then
-                ((volumes_processed++))
+                volumes_processed=$((volumes_processed + 1))
                 log INFO "✓ Volume $volume snapshot created ($(( snap_size / 1024 )) KB)"
             else
                 local error_msg
@@ -1700,9 +1703,6 @@ create_config_snapshot() {
         "nginx.conf"
         "Dockerfile"
     )
-    
-    # Always include the active environment file
-    config_files+=("$ENV_FILE_NAME")
 
     # Snapshot pasnap configuration file
     if [[ -f "$CONFIG_FILE" ]]; then
@@ -1722,6 +1722,19 @@ create_config_snapshot() {
             fi
         else
             log DEBUG "$file not found - skipping"
+        fi
+    done
+
+    # Snapshot environment files - backup ALL environment files that exist
+    # This ensures both .env and .env-core are captured if they exist
+    local env_files=(".env" ".env-core")
+    for env_file in "${env_files[@]}"; do
+        if [[ -f "$env_file" ]]; then
+            if cp "$env_file" "$snapshot_dir/config/" 2>/dev/null; then
+                log DEBUG "✓ $env_file snapshot created"
+            else
+                log WARN "✗ Failed to snapshot $env_file"
+            fi
         fi
     done
 
@@ -2000,7 +2013,7 @@ create_snapshot() {
             log DEBUG "Repository already exists"
             break
         else
-            ((retry_count++))
+            retry_count=$((retry_count + 1))
             if [[ $retry_count -lt $MAX_RETRY_ATTEMPTS ]]; then
                 log WARN "Repository initialization failed, retrying ($retry_count/$MAX_RETRY_ATTEMPTS)"
                 sleep 5
@@ -2349,7 +2362,7 @@ wait_for_database_containers_enhanced() {
             return 0
         fi
 
-        ((attempt++))
+        attempt=$((attempt + 1))
         if [[ $((attempt % 10)) -eq 0 ]]; then
             log INFO "Still waiting for databases... (attempt $attempt/$max_attempts)"
         fi
@@ -2920,25 +2933,24 @@ restore_config() {
             fi
         fi
 
-        # Restore environment file (supports legacy .env-core backups)
-        local snapshot_env_file="$data_dir/config/$ENV_FILE_NAME"
-        local restore_env_target="$ENV_FILE_NAME"
+        # Restore environment files - restore ALL environment files that exist in the snapshot
+        # This ensures both .env and .env-core are restored if they were backed up
+        local env_files=(".env" ".env-core")
+        local env_restored=false
 
-        if [[ ! -f "$snapshot_env_file" && "$PANELALPHA_APP_TYPE" == "engine" && "$ENV_FILE_NAME" == ".env" ]]; then
-            local legacy_env_file="$data_dir/config/.env-core"
-            if [[ -f "$legacy_env_file" ]]; then
-                snapshot_env_file="$legacy_env_file"
-                restore_env_target=".env-core"
+        for env_file in "${env_files[@]}"; do
+            local snapshot_env_file="$data_dir/config/$env_file"
+            if [[ -f "$snapshot_env_file" ]]; then
+                log INFO "Restoring ${env_file} configuration from backup..."
+                cp "$snapshot_env_file" "$env_file"
+                log INFO "${env_file} file restored from backup ✓"
+                rm -f "${env_file}.current-backup"
+                env_restored=true
             fi
-        fi
+        done
 
-        if [[ -f "$snapshot_env_file" ]]; then
-            log INFO "Restoring ${restore_env_target} configuration from backup..."
-            cp "$snapshot_env_file" "$restore_env_target"
-            log INFO "${restore_env_target} file restored from backup ✓"
-            rm -f "${restore_env_target}.current-backup"
-        else
-            log WARN "No ${restore_env_target} file found in backup, keeping current configuration"
+        if [[ "$env_restored" == false ]]; then
+            log WARN "No environment files found in backup, keeping current configuration"
         fi
 
         # Restore SSL certificates
