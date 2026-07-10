@@ -4,7 +4,9 @@ Complete reference for all configuration options.
 
 ## Configuration File
 
-Configuration is stored in `/opt/panelalpha/app/.env-backup` (Control Panel) or `/opt/panelalpha/engine/.env-backup` (Engine).
+Configuration is stored in `/opt/panelalpha/pasnap/.env-backup`.
+
+Older installations may still have a legacy file at `/opt/panelalpha/app/.env-backup` (Control Panel) or `/opt/panelalpha/engine/.env-backup` (Engine). The tool migrates that file to `/opt/panelalpha/pasnap/.env-backup` automatically on first run.
 
 ## Repository Settings
 

@@ -35,7 +35,7 @@ sudo ./pasnap.sh --list-snapshots
 If using remote storage (SFTP or S3), note your configuration:
 
 ```bash
-sudo cat /opt/panelalpha/app/.env-backup
+sudo cat /opt/panelalpha/pasnap/.env-backup
 ```
 
 ---
