@@ -66,7 +66,7 @@ sudo systemctl status docker
 
 2. Verify configuration:
    ```bash
-   sudo cat /opt/panelalpha/app/.env-backup
+   sudo cat /opt/panelalpha/pasnap/.env-backup
    ```
 
 3. For S3:
@@ -108,27 +108,71 @@ sudo systemctl status docker
 
 ### Database Backup Fails
 
-**Symptom**: Errors related to MySQL or database dumps.
+**Symptom**: Errors related to MySQL or database dumps, for example:
+
+```
+Cannot connect to PanelAlpha database (user: panelalpha)
+Verify API_MYSQL_PASSWORD in /opt/panelalpha/app/.env matches the running database
+```
 
 **Solution**:
 
-1. Check if PanelAlpha is running:
+1. Run the built-in database diagnostic:
    ```bash
-   cd /opt/panelalpha/app  # or /opt/panelalpha/engine
+   sudo /opt/panelalpha/pasnap.sh --verify-database
+   ```
+
+2. Check if PanelAlpha is running:
+   ```bash
+   cd /opt/panelalpha/app  # Control Panel
+   # or
+   cd /opt/panelalpha/engine  # Engine
    docker compose ps
    ```
 
-2. Verify database container is healthy:
+3. Verify the correct database password variable for your installation type:
+
+   | Installation | Environment file | Password variable | Database user | Container |
+   |---|---|---|---|---|
+   | Control Panel | `/opt/panelalpha/app/.env` | `API_MYSQL_PASSWORD` | `panelalpha` | `database-api` |
+   | Engine | `/opt/panelalpha/engine/.env` or `.env-core` | `CORE_MYSQL_PASSWORD` | `core` | `database-core` |
+   | Engine | `/opt/panelalpha/engine/.env` or `.env-core` | `USERS_MYSQL_ROOT_PASSWORD` | `root` | `database-users` |
+
+   Control Panel example:
    ```bash
-   docker compose logs database-api
+   grep API_MYSQL_PASSWORD /opt/panelalpha/app/.env
    ```
 
-3. Check database credentials in `.env` file
-
-4. Try restarting containers:
+   Engine example:
    ```bash
-   docker compose down
-   docker compose up -d
+   grep -E 'CORE_MYSQL_PASSWORD|USERS_MYSQL_ROOT_PASSWORD' /opt/panelalpha/engine/.env /opt/panelalpha/engine/.env-core 2>/dev/null
+   ```
+
+   You do **not** need to copy the password anywhere else. The Snapshot Tool reads it automatically from the PanelAlpha environment file.
+
+4. Test the database connection manually (Control Panel example):
+   ```bash
+   cd /opt/panelalpha/app
+   API_PASS=$(grep '^API_MYSQL_PASSWORD=' .env | cut -d'=' -f2-)
+   docker compose exec database-api mysql -u panelalpha -p"$API_PASS" -e "SELECT 1;"
+   ```
+
+5. If PanelAlpha works but the test above fails, the password in `.env` may be out of sync with the database volume. Compare with the API container:
+   ```bash
+   docker compose exec api printenv DB_PASSWORD
+   ```
+
+   If the values differ, update `API_MYSQL_PASSWORD` in `.env` to match the working value, then synchronize the MariaDB user password or contact support.
+
+6. Verify database container health:
+   ```bash
+   docker compose logs database-api  # Control Panel
+   docker compose logs database-core database-users  # Engine
+   ```
+
+7. Review snapshot logs:
+   ```bash
+   sudo tail -100 /var/log/pasnap.log
    ```
 
 ---
@@ -260,7 +304,7 @@ If the tool is in an inconsistent state:
 
 ```bash
 # Remove configuration
-sudo rm /opt/panelalpha/app/.env-backup
+sudo rm /opt/panelalpha/pasnap/.env-backup
 
 # Reinstall
 sudo ./pasnap.sh --install

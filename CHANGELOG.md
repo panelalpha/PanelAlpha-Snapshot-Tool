@@ -5,6 +5,20 @@ All notable changes to PanelAlpha Snapshot Tool will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.3] - 2026-07-10
+
+### Fixed
+- **Database password parsing**: Environment file values are now read with `cut -f2-` so passwords containing `=` characters are no longer truncated
+- **Database connection failures**: Improved password resolution with container environment fallback (`MYSQL_PASSWORD`) when `.env` is out of sync with the running database
+- **MySQL command execution**: Database backup, restore, and verification now use `MYSQL_PWD` instead of passing passwords on the command line
+
+### Added
+- **`--verify-database` flag**: Diagnose database credential and connectivity issues without creating a snapshot
+- **Actionable error messages**: Database connection errors now name the correct environment variable (`API_MYSQL_PASSWORD`, `CORE_MYSQL_PASSWORD`, etc.) and suggest diagnostic steps
+
+### Changed
+- **Troubleshooting documentation**: Expanded database backup failure guidance with per-installation password variable reference
+
 ## [1.2.2] - 2026-04-03
 
 ### Fixed

@@ -27,13 +27,13 @@ This skill covers database operations for backing up and restoring MySQL/MariaDB
 
 ```bash
 # Engine - Core database
-core_password=$(grep "^CORE_MYSQL_PASSWORD=" "$ENV_FILE" | cut -d'=' -f2 | tr -d '"')
+core_password=$(grep "^CORE_MYSQL_PASSWORD=" "$ENV_FILE" | head -1 | cut -d'=' -f2- | tr -d '"')
 
 # Engine - Users database
-users_password=$(grep "^USERS_MYSQL_ROOT_PASSWORD=" "$ENV_FILE" | cut -d'=' -f2 | tr -d '"')
+users_password=$(grep "^USERS_MYSQL_ROOT_PASSWORD=" "$ENV_FILE" | head -1 | cut -d'=' -f2- | tr -d '"')
 
 # Control Panel - API database
-api_password=$(grep "^API_MYSQL_PASSWORD=" "$ENV_FILE" | cut -d'=' -f2 | tr -d '"')
+api_password=$(grep "^API_MYSQL_PASSWORD=" "$ENV_FILE" | head -1 | cut -d'=' -f2- | tr -d '"')
 ```
 
 ### From Running Container

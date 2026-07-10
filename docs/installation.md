@@ -53,6 +53,12 @@ Test the connection to your storage backend:
 sudo /opt/panelalpha/pasnap.sh --test-connection
 ```
 
+Verify database credentials before creating snapshots:
+
+```bash
+sudo /opt/panelalpha/pasnap.sh --verify-database
+```
+
 ## Step 5: Create First Snapshot
 
 Create your first backup:
