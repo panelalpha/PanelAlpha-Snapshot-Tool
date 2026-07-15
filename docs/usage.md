@@ -116,7 +116,7 @@ Verifies connectivity to the configured storage backend.
 
 | Component | Description |
 |-----------|-------------|
-| PanelAlpha API Database | Complete MySQL dump with routines and triggers |
+| PanelAlpha API Database | Complete MariaDB/MySQL dump with routines and triggers |
 | Matomo Database | Analytics and statistics data |
 | Users Databases | (Engine only) Per-user databases |
 
@@ -125,7 +125,7 @@ Verifies connectivity to the configured storage backend.
 | Volume | Description |
 |--------|-------------|
 | `api-storage` | PanelAlpha application data |
-| `database-api-data` | MySQL data files |
+| `database-api-data` | MariaDB data files |
 | `redis-data` | Cache and session data |
 | `core-storage` | (Engine only) Core application data |
 

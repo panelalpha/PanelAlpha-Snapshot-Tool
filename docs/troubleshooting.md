@@ -108,7 +108,7 @@ sudo systemctl status docker
 
 ### Database Backup Fails
 
-**Symptom**: Errors related to MySQL or database dumps, for example:
+**Symptom**: Errors related to MariaDB/MySQL or database dumps, for example:
 
 ```
 Cannot connect to PanelAlpha database (user: panelalpha)
@@ -150,12 +150,23 @@ Verify API_MYSQL_PASSWORD in /opt/panelalpha/app/.env matches the running databa
 
    You do **not** need to copy the password anywhere else. The Snapshot Tool reads it automatically from the PanelAlpha environment file.
 
-4. Test the database connection manually (Control Panel example):
+4. Test the database connection manually:
+
+   **Control Panel:**
    ```bash
    cd /opt/panelalpha/app
    API_PASS=$(grep '^API_MYSQL_PASSWORD=' .env | cut -d'=' -f2-)
-   docker compose exec database-api mysql -u panelalpha -p"$API_PASS" -e "SELECT 1;"
+   docker compose exec database-api mariadb -u panelalpha -p"$API_PASS" -e "SELECT 1;"
    ```
+
+   **Engine:**
+   ```bash
+   cd /opt/panelalpha/engine
+   CORE_PASS=$(grep '^CORE_MYSQL_PASSWORD=' .env .env-core 2>/dev/null | head -1 | cut -d'=' -f2-)
+   docker compose exec database-core mariadb -u core -p"$CORE_PASS" -e "SELECT 1;"
+   ```
+
+   On older MySQL-based database images, use `mysql` instead of `mariadb`.
 
 5. If PanelAlpha works but the test above fails, the password in `.env` may be out of sync with the database volume. Compare with the API container:
    ```bash
@@ -320,5 +331,7 @@ If automatic restore fails, you can manually restore the database:
 ```bash
 # Extract database dump from snapshot (contact support for assistance)
 # Then import manually:
-docker compose exec -T database-api mysql -u root -p"$MYSQL_ROOT_PASSWORD" < dump.sql
+docker compose exec -T database-api mariadb -u root -p"$MYSQL_ROOT_PASSWORD" < dump.sql
 ```
+
+On older MySQL-based database images, use `mysql` instead of `mariadb`.
