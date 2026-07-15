@@ -10,7 +10,7 @@ set -euo pipefail
 # CONFIGURATION CONSTANTS
 # ======================
 
-readonly SCRIPT_VERSION="1.2.3"
+readonly SCRIPT_VERSION="1.2.4"
 readonly SCRIPT_NAME="PanelAlpha Snapshot & Restore Tool"
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -88,6 +88,9 @@ readonly USERS_DUMP_COMPRESSION_LEVEL="${PASNAP_USERS_DUMP_COMPRESSION_LEVEL:-1}
 readonly VOLUME_SNAPSHOT_TIMEOUT="${PASNAP_VOLUME_SNAPSHOT_TIMEOUT:-7200}"
 readonly USERS_HOME_SNAPSHOT_TIMEOUT="${PASNAP_USERS_HOME_SNAPSHOT_TIMEOUT:-14400}"
 
+# Cache resolved database client binaries per container (MySQL vs MariaDB images)
+declare -A DB_BINARY_CACHE=()
+
 # Color constants for logging
 readonly COLOR_RED='\033[0;31m'
 readonly COLOR_GREEN='\033[0;32m'
@@ -148,6 +151,47 @@ get_env_var() {
     echo "$value"
 }
 
+# Resolve database client binary inside a container (MySQL or MariaDB images)
+get_db_binary() {
+    local container="$1"
+    local tool="$2"
+    local cache_key candidate
+    local -a candidates=()
+
+    case "$tool" in
+        client)
+            cache_key="${container}:client"
+            candidates=("mysql" "mariadb")
+            ;;
+        dump)
+            cache_key="${container}:dump"
+            candidates=("mysqldump" "mariadb-dump")
+            ;;
+        admin)
+            cache_key="${container}:admin"
+            candidates=("mysqladmin" "mariadb-admin")
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+
+    if [[ -n "${DB_BINARY_CACHE[$cache_key]:-}" ]]; then
+        echo "${DB_BINARY_CACHE[$cache_key]}"
+        return 0
+    fi
+
+    for candidate in "${candidates[@]}"; do
+        if docker exec "$container" sh -c "command -v $candidate >/dev/null 2>&1"; then
+            DB_BINARY_CACHE[$cache_key]="$candidate"
+            echo "$candidate"
+            return 0
+        fi
+    done
+
+    return 1
+}
+
 # Read MySQL user password from container environment
 get_container_mysql_password() {
     local container="$1"
@@ -161,39 +205,48 @@ get_container_mysql_password() {
     echo "$password"
 }
 
-# Test MySQL connection without exposing password on the command line
+# Test MySQL/MariaDB connection without exposing password on the command line
 test_mysql_connection() {
     local container="$1"
     local username="$2"
     local password="$3"
+    local client
 
     [[ -n "$container" && -n "$username" && -n "$password" ]] || return 1
 
+    client=$(get_db_binary "$container" client) || return 1
+
     timeout "$MYSQL_TIMEOUT" docker exec -e MYSQL_PWD="$password" "$container" \
-        mysql -u "$username" -e "SELECT 1;" >/dev/null 2>&1
+        "$client" -u "$username" -e "SELECT 1;" >/dev/null 2>&1
 }
 
-# Execute MySQL client command using MYSQL_PWD
+# Execute MySQL/MariaDB client command using MYSQL_PWD
 mysql_exec() {
     local container="$1"
     local username="$2"
     local password="$3"
+    local client
     shift 3
 
-    docker exec -e MYSQL_PWD="$password" "$container" mysql -u "$username" "$@"
+    client=$(get_db_binary "$container" client) || return 1
+
+    docker exec -e MYSQL_PWD="$password" "$container" "$client" -u "$username" "$@"
 }
 
-# Execute MySQL client command with stdin (for imports)
+# Execute MySQL/MariaDB client command with stdin (for imports)
 mysql_exec_stdin() {
     local container="$1"
     local username="$2"
     local password="$3"
     local database="${4:-}"
+    local client
+
+    client=$(get_db_binary "$container" client) || return 1
 
     if [[ -n "$database" ]]; then
-        docker exec -i -e MYSQL_PWD="$password" "$container" mysql -u "$username" "$database"
+        docker exec -i -e MYSQL_PWD="$password" "$container" "$client" -u "$username" "$database"
     else
-        docker exec -i -e MYSQL_PWD="$password" "$container" mysql -u "$username"
+        docker exec -i -e MYSQL_PWD="$password" "$container" "$client" -u "$username"
     fi
 }
 
@@ -237,7 +290,8 @@ log_database_connection_error() {
 
     log ERROR "✗ Cannot connect to $db_label database (user: $username)"
     log ERROR "Verify $env_key in $ENV_FILE matches the running database"
-    log ERROR "Test: cd $PANELALPHA_DIR && docker compose exec $service_name mysql -u $username -p -e 'SELECT 1;'"
+    log ERROR "Test: cd $PANELALPHA_DIR && docker compose exec $service_name mariadb -u $username -p -e 'SELECT 1;'"
+    log ERROR "      (use 'mysql' instead of 'mariadb' on older MySQL-based database images)"
     log ERROR "If PanelAlpha works but this fails, $env_key may be out of sync with the DB volume"
     log ERROR "Run: $0 --verify-database for diagnostics"
 }
@@ -1345,40 +1399,46 @@ create_database_snapshot() {
 
             # Create database dump with enhanced options and error checking
             local dump_file="$snapshot_dir/databases/panelalpha-core.sql"
+            local dump_bin
 
-            # Start dump in background and monitor progress
-            timeout "$CORE_DUMP_TIMEOUT" docker exec -e MYSQL_PWD="$core_password" "$core_container" \
-                mysqldump -u core core \
-                --single-transaction --routines --triggers --lock-tables=false \
-                --add-drop-database --create-options --disable-keys \
-                --extended-insert --quick --set-charset \
-                > "$dump_file" 2>/dev/null &
-            local dump_pid=$!
+            if ! dump_bin=$(get_db_binary "$core_container" dump); then
+                log ERROR "✗ Core database dump tool not found (expected mysqldump or mariadb-dump)"
+                snapshot_success=false
+            else
+                # Start dump in background and monitor progress
+                timeout "$CORE_DUMP_TIMEOUT" docker exec -e MYSQL_PWD="$core_password" "$core_container" \
+                    "$dump_bin" -u core core \
+                    --single-transaction --routines --triggers --lock-tables=false \
+                    --add-drop-database --create-options --disable-keys \
+                    --extended-insert --quick --set-charset \
+                    > "$dump_file" 2>/dev/null &
+                local dump_pid=$!
 
-            # Monitor progress while dump is running
-            log INFO "Creating Core database dump..."
-            monitor_dump_progress "$dump_file" "Core database dump" "$CORE_DUMP_TIMEOUT" &
-            local monitor_pid=$!
+                # Monitor progress while dump is running
+                log INFO "Creating Core database dump..."
+                monitor_dump_progress "$dump_file" "Core database dump" "$CORE_DUMP_TIMEOUT" &
+                local monitor_pid=$!
 
-            # Wait for dump to complete
-            if wait $dump_pid; then
-                kill $monitor_pid 2>/dev/null || true
-                wait $monitor_pid 2>/dev/null || true
+                # Wait for dump to complete
+                if wait $dump_pid; then
+                    kill $monitor_pid 2>/dev/null || true
+                    wait $monitor_pid 2>/dev/null || true
 
-                # Verify snapshot file integrity
-                if verify_file_integrity "$dump_file" 1000; then
-                    local core_size
-                    core_size=$(stat -c%s "$dump_file" 2>/dev/null || echo "0")
-                    log INFO "✓ Core database snapshot created ($(( core_size / 1024 )) KB)"
+                    # Verify snapshot file integrity
+                    if verify_file_integrity "$dump_file" 1000; then
+                        local core_size
+                        core_size=$(stat -c%s "$dump_file" 2>/dev/null || echo "0")
+                        log INFO "✓ Core database snapshot created ($(( core_size / 1024 )) KB)"
+                    else
+                        log ERROR "✗ Core database snapshot is corrupted"
+                        snapshot_success=false
+                    fi
                 else
-                    log ERROR "✗ Core database snapshot is corrupted"
+                    kill $monitor_pid 2>/dev/null || true
+                    wait $monitor_pid 2>/dev/null || true
+                    log ERROR "✗ Core database snapshot failed"
                     snapshot_success=false
                 fi
-            else
-                kill $monitor_pid 2>/dev/null || true
-                wait $monitor_pid 2>/dev/null || true
-                log ERROR "✗ Core database snapshot failed"
-                snapshot_success=false
             fi
         else
             log_database_connection_error "Core" "CORE_MYSQL_PASSWORD" "core" "database-core"
@@ -1402,14 +1462,19 @@ create_database_snapshot() {
             local dump_base="$snapshot_dir/databases/panelalpha-users.sql"
             local dump_file="$dump_base"
             local users_dump_compressed=false
+            local dump_bin
 
+            if ! dump_bin=$(get_db_binary "$users_container" dump); then
+                log ERROR "✗ Users database dump tool not found (expected mysqldump or mariadb-dump)"
+                snapshot_success=false
+            else
             if command -v gzip &> /dev/null; then
                 dump_file="${dump_base}.gz"
                 users_dump_compressed=true
             fi
 
             local -a mysqldump_args=(
-                mysqldump
+                "$dump_bin"
                 -u root
                 --all-databases
                 --single-transaction
@@ -1494,6 +1559,7 @@ create_database_snapshot() {
                         log ERROR "✗ Users databases snapshot failed"
                         snapshot_success=false
                     fi
+            fi
         else
             log_database_connection_error "Users" "USERS_MYSQL_ROOT_PASSWORD" "root" "database-users"
             snapshot_success=false
@@ -1518,8 +1584,13 @@ create_database_snapshot() {
             log DEBUG "API database connection verified"
 
             local dump_file="$snapshot_dir/databases/panelalpha-api.sql"
-            if timeout 300 docker exec -e MYSQL_PWD="$api_password" "$api_container" \
-                mysqldump -u panelalpha panelalpha \
+            local dump_bin
+
+            if ! dump_bin=$(get_db_binary "$api_container" dump); then
+                log ERROR "✗ PanelAlpha database dump tool not found (expected mysqldump or mariadb-dump)"
+                snapshot_success=false
+            elif timeout 300 docker exec -e MYSQL_PWD="$api_password" "$api_container" \
+                "$dump_bin" -u panelalpha panelalpha \
                 --single-transaction --routines --triggers --lock-tables=false \
                 --add-drop-database --create-options --disable-keys \
                 --extended-insert --quick --set-charset \
@@ -2374,9 +2445,11 @@ wait_for_database_containers_enhanced() {
     while [[ $attempt -lt $max_attempts ]]; do
         local db1_ready=false
         local db2_ready=true  # Default to true for Control Panel (single container)
+        local admin_bin1 admin_bin2
 
-        # Check first database - just basic MySQL connectivity without authentication
-        if docker exec "$container1" mysqladmin ping --silent 2>/dev/null; then
+        # Check first database - just basic MySQL/MariaDB connectivity without authentication
+        if admin_bin1=$(get_db_binary "$container1" admin 2>/dev/null) && \
+            docker exec "$container1" "$admin_bin1" ping --silent 2>/dev/null; then
             log DEBUG "$name1 database is responding to ping"
             db1_ready=true
         else
@@ -2386,7 +2459,8 @@ wait_for_database_containers_enhanced() {
         # Check second database only if it exists (Engine only)
         if [[ -n "$container2" ]]; then
             db2_ready=false
-            if docker exec "$container2" mysqladmin ping --silent 2>/dev/null; then
+            if admin_bin2=$(get_db_binary "$container2" admin 2>/dev/null) && \
+                docker exec "$container2" "$admin_bin2" ping --silent 2>/dev/null; then
                 log DEBUG "$name2 database is responding to ping"
                 db2_ready=true
             else
@@ -2499,7 +2573,13 @@ setup_database_user() {
     log INFO "User $username doesn't exist, attempting to create..."
 
     # Try with root without password (fresh container)
-    if docker exec "$container" mysql -e "
+    local client
+    client=$(get_db_binary "$container" client) || {
+        log ERROR "✗ Database client not found in container (expected mysql or mariadb)"
+        return 1
+    }
+
+    if docker exec "$container" "$client" -e "
         CREATE USER IF NOT EXISTS '$username'@'%' IDENTIFIED BY '$password';
         CREATE USER IF NOT EXISTS '$username'@'localhost' IDENTIFIED BY '$password';
         GRANT ALL PRIVILEGES ON $username.* TO '$username'@'%';

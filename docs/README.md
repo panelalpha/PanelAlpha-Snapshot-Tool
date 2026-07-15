@@ -16,7 +16,7 @@ Welcome to the PanelAlpha Snapshot Tool documentation. This tool provides a comp
 ### What Gets Backed Up
 
 **PanelAlpha Control Panel** (`/opt/panelalpha/app`):
-- API database (MySQL dump with routines and triggers)
+- API database (MariaDB/MySQL dump with routines and triggers)
 - Matomo database
 - `api-storage` volume
 - `redis-data` volume

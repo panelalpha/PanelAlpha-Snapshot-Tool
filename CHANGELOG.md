@@ -5,6 +5,14 @@ All notable changes to PanelAlpha Snapshot Tool will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.4] - 2026-07-15
+
+### Fixed
+- **MariaDB database images**: Backup, restore, and verification now auto-detect `mariadb` / `mariadb-dump` / `mariadb-admin` client binaries when `mysql` / `mysqldump` / `mysqladmin` are not present in the container (PanelAlpha multi-server MariaDB 12+ images)
+
+### Changed
+- **Troubleshooting documentation**: Manual database connection and restore examples now use `mariadb` (current images), with a note to use `mysql` on older MySQL-based images
+
 ## [1.2.3] - 2026-07-10
 
 ### Fixed
