@@ -38,7 +38,7 @@ readonly COLOR_NC='\033[0m'
 
 INSTALLATION_TYPE="unknown"
 PANEL_DIR=""    # /opt/panelalpha/app (multi-server) | /opt/panelalpha/app-lite (single-server) | "" (engine)
-ENGINE_DIR=""   # /opt/panelalpha/shared-hosting or /opt/panelalpha/engine | "" (multi-server)
+ENGINE_DIR=""   # /opt/panelalpha/shared-hosting | "" (multi-server)
 SNAPSHOT_ID=""  # set by resolve_snapshot()
 
 # ======================
@@ -48,33 +48,22 @@ SNAPSHOT_ID=""  # set by resolve_snapshot()
 detect_installation() {
     local applite_compose="/opt/panelalpha/app-lite/docker-compose.yml"
     local shared_compose="/opt/panelalpha/shared-hosting/docker-compose.yml"
-    local engine_compose="/opt/panelalpha/engine/docker-compose.yml"
     local app_compose="/opt/panelalpha/app/docker-compose.yml"
 
     local has_applite=false
-    local has_engine_or_shared=false
+    local has_shared_hosting=false
 
     [[ -f "$applite_compose" ]] && has_applite=true
-    if [[ -f "$shared_compose" ]] || [[ -f "$engine_compose" ]]; then
-        has_engine_or_shared=true
-    fi
+    [[ -f "$shared_compose" ]] && has_shared_hosting=true
 
-    # Prefer shared-hosting over engine path for ENGINE_DIR
-    local engine_dir_candidate=""
-    if [[ -f "$shared_compose" ]]; then
-        engine_dir_candidate="/opt/panelalpha/shared-hosting"
-    elif [[ -f "$engine_compose" ]]; then
-        engine_dir_candidate="/opt/panelalpha/engine"
-    fi
-
-    if [[ "$has_applite" == "true" && "$has_engine_or_shared" == "true" ]]; then
+    if [[ "$has_applite" == "true" && "$has_shared_hosting" == "true" ]]; then
         INSTALLATION_TYPE="single-server"
         PANEL_DIR="/opt/panelalpha/app-lite"
-        ENGINE_DIR="$engine_dir_candidate"
-    elif [[ "$has_engine_or_shared" == "true" ]]; then
+        ENGINE_DIR="/opt/panelalpha/shared-hosting"
+    elif [[ "$has_shared_hosting" == "true" ]]; then
         INSTALLATION_TYPE="engine"
         PANEL_DIR=""
-        ENGINE_DIR="$engine_dir_candidate"
+        ENGINE_DIR="/opt/panelalpha/shared-hosting"
     elif [[ -f "$app_compose" ]]; then
         INSTALLATION_TYPE="multi-server"
         PANEL_DIR="/opt/panelalpha/app"
@@ -89,10 +78,9 @@ detect_installation() {
 require_installation() {
     if [[ "$INSTALLATION_TYPE" == "unknown" ]]; then
         log ERROR "PanelAlpha installation not detected. Expected one of:"
-        log ERROR "  /opt/panelalpha/app/docker-compose.yml                          (multi-server)"
-        log ERROR "  /opt/panelalpha/app-lite/docker-compose.yml + engine compose    (single-server)"
-        log ERROR "  /opt/panelalpha/shared-hosting/docker-compose.yml               (engine)"
-        log ERROR "  /opt/panelalpha/engine/docker-compose.yml                       (engine)"
+        log ERROR "  /opt/panelalpha/app/docker-compose.yml                                           (multi-server)"
+        log ERROR "  /opt/panelalpha/app-lite/docker-compose.yml + /opt/panelalpha/shared-hosting/... (single-server)"
+        log ERROR "  /opt/panelalpha/shared-hosting/docker-compose.yml                                (engine)"
         exit 1
     fi
 }

@@ -71,8 +71,8 @@ sudo /opt/panelalpha/pasnap.sh --cron status
 | Type | Paths |
 |------|--------|
 | **multi-server** | `/opt/panelalpha/app` |
-| **single-server** | `/opt/panelalpha/app-lite` + `/opt/panelalpha/shared-hosting` (or `/opt/panelalpha/engine`) |
-| **engine** | `/opt/panelalpha/shared-hosting` or `/opt/panelalpha/engine` without app-lite |
+| **single-server** | `/opt/panelalpha/app-lite` + `/opt/panelalpha/shared-hosting` |
+| **engine** | `/opt/panelalpha/shared-hosting` without app-lite |
 
 No manual type flag is required. If detection fails, the tool exits instead of guessing.
 

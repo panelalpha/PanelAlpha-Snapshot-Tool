@@ -27,14 +27,14 @@ pasnap-tool/
 ```bash
 detect_installation() {
     # Priority:
-    # 1. app-lite + (shared-hosting|engine) → single-server
-    # 2. shared-hosting|engine              → engine
-    # 3. app                                → multi-server
-    # 4. else                               → unknown (fail via require_installation)
+    # 1. app-lite + shared-hosting → single-server
+    # 2. shared-hosting            → engine
+    # 3. app                       → multi-server
+    # 4. else                      → unknown (fail via require_installation)
 }
 ```
 
-Globals: `INSTALLATION_TYPE`, `PANEL_DIR`, `ENGINE_DIR`. Prefer `/opt/panelalpha/shared-hosting` over `/opt/panelalpha/engine` for `ENGINE_DIR`.
+Globals: `INSTALLATION_TYPE`, `PANEL_DIR`, `ENGINE_DIR`. Engine always lives at `/opt/panelalpha/shared-hosting` (there is no `/opt/panelalpha/engine` install path).
 
 **Never** fall back from `unknown` to multi-server paths.
 
@@ -84,6 +84,5 @@ bash -n pasnap.sh
 ## Common Pitfalls
 
 1. Forgetting single-server needs **both** stacks in snapshot and restore
-2. Using `/opt/panelalpha/engine` only — production prefers `shared-hosting`
-3. Silent defaults for `unknown` (removed in 1.3.0)
-4. Confusing this tool with product site backups
+2. Silent defaults for `unknown` (removed in 1.3.0)
+3. Confusing this tool with product site backups

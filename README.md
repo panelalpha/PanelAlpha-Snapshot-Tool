@@ -17,8 +17,8 @@ It auto-detects one of three installation types:
 | Type | Paths |
 |------|--------|
 | **multi-server** | `/opt/panelalpha/app` |
-| **single-server** | `/opt/panelalpha/app-lite` **and** `/opt/panelalpha/shared-hosting` (or `engine`) |
-| **engine** | `/opt/panelalpha/shared-hosting` or `/opt/panelalpha/engine` (without app-lite) |
+| **single-server** | `/opt/panelalpha/app-lite` **and** `/opt/panelalpha/shared-hosting` |
+| **engine** | `/opt/panelalpha/shared-hosting` (without app-lite) |
 
 Snapshots are stored with **Restic (AES-256)**. Without the repository password, restore is impossible.
 

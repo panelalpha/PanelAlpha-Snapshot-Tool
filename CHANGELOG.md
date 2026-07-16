@@ -12,7 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Unknown installation**: No silent fallback to Control Panel paths. If no supported layout is found, the tool exits with a clear error listing expected paths.
 
 ### Added
-- **Single-server profile**: Detects `/opt/panelalpha/app-lite` together with `shared-hosting` (or `engine`). Snapshots include full engine data plus app-lite `.env`, `docker-compose.yml`, `data/api-storage`, and the panel database schema dumped from `database-core` (`DB_DATABASE` / `DB_USERNAME` / `DB_PASSWORD`).
+- **Single-server profile**: Detects `/opt/panelalpha/app-lite` together with `/opt/panelalpha/shared-hosting`. Snapshots include full engine data plus app-lite `.env`, `docker-compose.yml`, `data/api-storage`, and the panel database schema dumped from `database-core` (`DB_DATABASE` / `DB_USERNAME` / `DB_PASSWORD`).
 - **`--quickstart`**: One command for install dependencies (if needed) + interactive setup (if unconfigured) + first snapshot.
 - **Profile-driven snapshot/restore**: Shared helpers (`dump_mariadb_*`, `snapshot_docker_volume`, `snapshot_path`) replace duplicated engine/app branches.
 - **Installation banner**: Every major command prints detected type and panel/engine paths.

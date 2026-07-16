@@ -18,8 +18,8 @@ Welcome to the PanelAlpha Snapshot Tool documentation. This tool provides encryp
 | Type | Detected when | What is snapshotted |
 |------|---------------|---------------------|
 | **multi-server** | `/opt/panelalpha/app/docker-compose.yml` | API DB, `api-storage` / `database-api-data` / `redis-data`, panel config (`.env`, `.env-api`), packages, SSL |
-| **single-server** | `app-lite` **and** `shared-hosting` (or `engine`) | Full engine scope **plus** app-lite panel DB (schema in `database-core`), `.env`, compose, `data/api-storage` |
-| **engine** | `shared-hosting` or `engine` without app-lite | Core + users DBs, engine volumes, `.env` / `.env-core`, `users/`, `/home`, SSL |
+| **single-server** | `app-lite` **and** `shared-hosting` | Full engine scope **plus** app-lite panel DB (schema in `database-core`), `.env`, compose, `data/api-storage` |
+| **engine** | `shared-hosting` without app-lite | Core + users DBs, engine volumes, `.env` / `.env-core`, `users/`, `/home`, SSL |
 
 If none of these layouts is found, the tool exits with an error (no silent fallback).
 

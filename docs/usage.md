@@ -84,7 +84,7 @@ sudo ./pasnap.sh --help
 | Volumes | `api-storage`, `database-api-data`, `redis-data` |
 | Config | `docker-compose.yml`, `.env`, `.env-api`, `packages/`, Let's Encrypt |
 
-### engine (`shared-hosting` or `engine`)
+### engine (`/opt/panelalpha/shared-hosting`)
 
 | Component | Details |
 |-----------|---------|

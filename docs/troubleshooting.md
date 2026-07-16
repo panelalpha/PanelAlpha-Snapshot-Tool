@@ -124,22 +124,21 @@ Verify API_MYSQL_PASSWORD in /opt/panelalpha/app/.env matches the running databa
 
 2. Check if PanelAlpha is running:
    ```bash
-   cd /opt/panelalpha/app  # Control Panel
+   cd /opt/panelalpha/app              # multi-server
    # or
-   cd /opt/panelalpha/engine  # Engine
+   cd /opt/panelalpha/shared-hosting   # engine / single-server
    docker compose ps
    ```
+
 
 3. Verify the correct database password variables for your installation type:
 
    | Installation | Environment file | Password variable | Database user | Container |
    |---|---|---|---|---|
    | multi-server | `/opt/panelalpha/app/.env` (or `.env-api`) | `API_MYSQL_PASSWORD` | `panelalpha` | `database-api` |
-   | engine / single-server | `/opt/panelalpha/shared-hosting/.env` (prefer) or `engine/.env` | `CORE_MYSQL_PASSWORD` | `core` | `database-core` |
+   | engine / single-server | `/opt/panelalpha/shared-hosting/.env` | `CORE_MYSQL_PASSWORD` | `core` | `database-core` |
    | engine / single-server | same as above | `USERS_MYSQL_ROOT_PASSWORD` | `root` | `database-users` |
    | single-server (panel) | `/opt/panelalpha/app-lite/.env` | `DB_PASSWORD` (+ `DB_DATABASE`, `DB_USERNAME`) | panel user | `database-core` |
-
-   Prefer `shared-hosting` over legacy `/opt/panelalpha/engine` for Engine paths.
 
    Multi-server example:
    ```bash
@@ -195,8 +194,8 @@ Verify API_MYSQL_PASSWORD in /opt/panelalpha/app/.env matches the running databa
 **Solution**: Confirm the host layout matches one of:
 
 - multi-server: `/opt/panelalpha/app/docker-compose.yml`
-- single-server: `/opt/panelalpha/app-lite/docker-compose.yml` **and** engine compose under `shared-hosting` or `engine`
-- engine: `/opt/panelalpha/shared-hosting/docker-compose.yml` (or `engine`) without app-lite
+- single-server: `/opt/panelalpha/app-lite/docker-compose.yml` **and** `/opt/panelalpha/shared-hosting/docker-compose.yml`
+- engine: `/opt/panelalpha/shared-hosting/docker-compose.yml` without app-lite
 
 There is no silent fallback to a guessed path.
 
