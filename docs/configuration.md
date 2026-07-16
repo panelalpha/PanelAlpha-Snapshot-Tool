@@ -79,7 +79,13 @@ Default: `2` (2:00 AM)
 
 ### BACKUP_TAG_PREFIX
 
-Prefix for snapshot tags to identify backups.
+Legacy prefix field kept in the config file for compatibility. Effective Restic tags are built as:
+
+```text
+panelalpha-<installation-type>-<hostname>
+```
+
+where `<installation-type>` is `multi-server`, `single-server`, or `engine`. Additional tags: `databases`, `volumes`, `config` (and `users` / `home` for engine and single-server).
 
 ```bash
 BACKUP_TAG_PREFIX="panelalpha"

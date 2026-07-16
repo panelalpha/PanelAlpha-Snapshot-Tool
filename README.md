@@ -8,51 +8,53 @@
 
 </div>
 
-## Intro & motivation
+## Intro
 
-**PanelAlpha Snapshot Tool is a self-hosted backup solution to create, store, and restore complete snapshots of your PanelAlpha installation.**
+**PanelAlpha Snapshot Tool** creates encrypted, restorable disaster-recovery snapshots of a PanelAlpha host: databases, Docker volumes, configuration, and (for Engine / single-server) customer data under `/home` and user projects.
 
-The objective is to provide a reliable way to backup your PanelAlpha Control Panel or Engine, including databases, Docker volumes, configuration files, and SSL certificates. Snapshots can be stored locally, on remote servers via SFTP, or in S3-compatible cloud storage.
+It auto-detects one of three installation types:
 
-The tool automatically detects your installation type (Control Panel or Engine) and handles everything accordingly - no manual configuration needed.
+| Type | Paths |
+|------|--------|
+| **multi-server** | `/opt/panelalpha/app` |
+| **single-server** | `/opt/panelalpha/app-lite` **and** `/opt/panelalpha/shared-hosting` (or `engine`) |
+| **engine** | `/opt/panelalpha/shared-hosting` or `/opt/panelalpha/engine` (without app-lite) |
+
+Snapshots are stored with **Restic (AES-256)**. Without the repository password, restore is impossible.
+
+> This tool is **install-level DR** (SSH/sudo). Per-site WordPress backups in the Admin/Client Area are a separate product feature.
 
 ## Features
 
-- 📸 Create complete snapshots of databases, volumes, and configuration files.
-- 🔄 Restore snapshots on the same server or migrate to a new one.
-- ☁️ Store backups locally, via SFTP, or in S3-compatible storage (AWS, Hetzner, DigitalOcean).
-- 🤖 Schedule automatic daily backups with built-in cron management.
-- 🔐 AES-256 encryption for all snapshots.
-- 🎯 Auto-detection of PanelAlpha Control Panel or Engine installation.
-- 📋 Simple CLI interface with interactive setup wizard.
+- Full snapshots: databases, volumes, config, SSL; Engine/single-server also `/home` and `users/`
+- Single-server: engine **plus** app-lite panel DB, `.env`, and `data/api-storage`
+- Local, SFTP, or S3-compatible storage
+- Daily cron automation
+- AES-256 encryption via Restic
+- Auto-detection of installation type (fail-closed if unknown)
+- Simple CLI; optional one-shot `--quickstart`
 
 ## Installation
 
-1. Download the script:
 ```bash
 wget -O /opt/panelalpha/pasnap.sh https://raw.githubusercontent.com/panelalpha/PanelAlpha-Snapshot-Tool/main/pasnap.sh
-```
-
-2. Install dependencies:
-```bash
+chmod +x /opt/panelalpha/pasnap.sh
 sudo /opt/panelalpha/pasnap.sh --install
 ```
 
-For detailed installation and configuration instructions, see the [Documentation](docs/README.md).
+Detailed guides: [Documentation](docs/README.md).
 
 ## Quick Start
 
 ```bash
-# Configure storage backend
+# One-shot: install tools + configure + first snapshot
+sudo ./pasnap.sh --quickstart
+
+# Or step by step:
 sudo ./pasnap.sh --setup
-
-# Test connection
 sudo ./pasnap.sh --test-connection
-
-# Create your first snapshot
+sudo ./pasnap.sh --verify-database
 sudo ./pasnap.sh --snapshot
-
-# Enable automatic daily backups
 sudo ./pasnap.sh --cron install
 ```
 
@@ -70,23 +72,21 @@ sudo ./pasnap.sh --cron install
 - Ubuntu 18.04+ or compatible Linux
 - Docker 20.10+
 - Root access (sudo)
-- At least 3GB free disk space
+- At least 3GB free disk space (more for large `/home` on Engine)
 
 ## Security
 
-- All snapshots are encrypted using AES-256
-- Configuration files have restricted permissions (600)
-- HTTPS/TLS for all remote communications
-- S3 credentials are only exported during operations
+- All snapshots encrypted with AES-256 (Restic)
+- Config file `/opt/panelalpha/pasnap/.env-backup` mode `600`
+- Database passwords via `MYSQL_PWD` (not CLI args)
+- Store the encryption password offline — it cannot be recovered from the tool
 
 ## Support
 
-If you encounter issues:
-
-1. Check the [Troubleshooting Guide](docs/troubleshooting.md)
-2. Review logs: `sudo tail -f /var/log/pasnap.log`
-3. Open an [Issue](https://github.com/panelalpha/PanelAlpha-Snapshot-Tool/issues)
+1. [Troubleshooting](docs/troubleshooting.md)
+2. Logs: `sudo tail -f /var/log/pasnap.log`
+3. [GitHub Issues](https://github.com/panelalpha/PanelAlpha-Snapshot-Tool/issues)
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+See [LICENSE](LICENSE).

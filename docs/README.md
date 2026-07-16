@@ -1,43 +1,37 @@
 # PanelAlpha Snapshot Tool Documentation
 
-Welcome to the PanelAlpha Snapshot Tool documentation. This tool provides a complete backup solution for PanelAlpha Control Panel and Engine installations.
+Welcome to the PanelAlpha Snapshot Tool documentation. This tool provides encrypted disaster-recovery snapshots for PanelAlpha hosts.
 
 ## Table of Contents
 
-- [Installation Guide](installation.md) - How to install and set up the tool
-- [Storage Backends](storage-backends.md) - Configure local, SFTP, or S3 storage
-- [Usage & Commands](usage.md) - Complete command reference
-- [Server Migration](migration.md) - Move PanelAlpha to a new server
-- [Configuration Reference](configuration.md) - All configuration options
-- [Troubleshooting](troubleshooting.md) - Common issues and solutions
+- [Installation Guide](installation.md) — Install and set up the tool
+- [Storage Backends](storage-backends.md) — Local, SFTP, or S3 storage
+- [Usage & Commands](usage.md) — Command reference
+- [Server Migration](migration.md) — Move PanelAlpha to a new server
+- [Configuration Reference](configuration.md) — Configuration options
+- [Troubleshooting](troubleshooting.md) — Common issues and solutions
 
 ## Overview
 
-### What Gets Backed Up
+### Installation types (auto-detected)
 
-**PanelAlpha Control Panel** (`/opt/panelalpha/app`):
-- API database (MariaDB/MySQL dump with routines and triggers)
-- Matomo database
-- `api-storage` volume
-- `redis-data` volume
-- Docker configuration files
-- SSL certificates
-- Nginx configurations
+| Type | Detected when | What is snapshotted |
+|------|---------------|---------------------|
+| **multi-server** | `/opt/panelalpha/app/docker-compose.yml` | API DB, `api-storage` / `database-api-data` / `redis-data`, panel config (`.env`, `.env-api`), packages, SSL |
+| **single-server** | `app-lite` **and** `shared-hosting` (or `engine`) | Full engine scope **plus** app-lite panel DB (schema in `database-core`), `.env`, compose, `data/api-storage` |
+| **engine** | `shared-hosting` or `engine` without app-lite | Core + users DBs, engine volumes, `.env` / `.env-core`, `users/`, `/home`, SSL |
 
-**PanelAlpha Engine** (`/opt/panelalpha/engine`):
-- Core database
-- Users databases
-- `core-storage` volume
-- Docker configuration files
-- SSL certificates
+If none of these layouts is found, the tool exits with an error (no silent fallback).
 
-### Supported Storage Backends
+### Supported storage backends
 
-| Backend | Best For | Pros | Cons |
-|---------|----------|------|------|
-| Local | Development, testing | Fast, simple | Single point of failure |
-| SFTP | Existing SSH infrastructure | Secure, widely supported | Requires SSH setup |
-| S3 | Production environments | Highly available, scalable | Requires cloud account |
+| Backend | Best for | Notes |
+|---------|----------|--------|
+| Local | Labs / same-host DR | Suggest `/backup/panelalpha`; lost if the server dies |
+| SFTP | Existing SSH infra | Needs passwordless SSH for root |
+| S3 | Production offsite | AWS, Hetzner, MinIO, DigitalOcean Spaces |
+
+All backends use **Restic AES-256** encryption. Keep `RESTIC_PASSWORD` safe.
 
 ## Quick Links
 

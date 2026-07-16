@@ -44,7 +44,9 @@ sudo cat /opt/panelalpha/pasnap/.env-backup
 
 #### 1. Install PanelAlpha
 
-Perform a basic PanelAlpha installation following the official documentation.
+Perform a basic PanelAlpha installation of the **same type** as the source host
+(multi-server, single-server, or engine). Restoring across different types is not
+supported automatically — the tool will warn if types mismatch.
 
 #### 2. Install Snapshot Tool
 

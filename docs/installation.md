@@ -2,10 +2,9 @@
 
 ## System Requirements
 
-- **Operating System**: Ubuntu 18.04+ or compatible Linux distribution
+- **Operating System**: Ubuntu 18.04+ or compatible Linux
 - **Docker**: Version 20.10 or higher
-- **Disk Space**: At least 3GB free space
-- **Internet**: Required for cloud storage backends
+- **Disk Space**: At least 3GB free (more for Engine `/home`)
 - **Permissions**: Root access (sudo)
 
 ## Step 1: Download the Script
@@ -17,78 +16,65 @@ chmod +x /opt/panelalpha/pasnap.sh
 
 ## Step 2: Install Dependencies
 
-Run the installation command to set up all necessary tools (restic, etc.):
-
 ```bash
 sudo /opt/panelalpha/pasnap.sh --install
 ```
 
-This will:
-- Install restic backup tool
-- Create necessary directories
-- Set up log files
-- Configure permissions
+This installs restic, jq, rsync (if missing) and verifies Docker / Docker Compose.
 
 ## Step 3: Configure Storage Backend
-
-Run the interactive setup wizard:
 
 ```bash
 sudo /opt/panelalpha/pasnap.sh --setup
 ```
 
-The wizard will guide you through:
-1. Selecting storage type (local, SFTP, or S3)
-2. Configuring connection details
-3. Setting encryption password
-4. Testing the connection
+The wizard:
 
-See [Storage Backends](storage-backends.md) for detailed configuration options.
+1. Shows the detected installation type (multi-server / single-server / engine)
+2. Asks for storage type (local default path `/backup/panelalpha`, SFTP, or S3)
+3. Sets the **encryption password** (min 8 characters — required for every restore)
+4. Sets retention (default 30 days) and cron hour (default 2)
+5. Tests the repository and verifies database credentials
 
-## Step 4: Verify Installation
+See [Storage Backends](storage-backends.md).
 
-Test the connection to your storage backend:
+## Step 4: Verify
 
 ```bash
 sudo /opt/panelalpha/pasnap.sh --test-connection
-```
-
-Verify database credentials before creating snapshots:
-
-```bash
 sudo /opt/panelalpha/pasnap.sh --verify-database
 ```
 
 ## Step 5: Create First Snapshot
 
-Create your first backup:
-
 ```bash
 sudo /opt/panelalpha/pasnap.sh --snapshot
 ```
 
-## Optional: Enable Automatic Backups
+## One-shot alternative
 
-Set up daily automatic snapshots:
+On a fresh host you can combine install + setup + first snapshot:
+
+```bash
+sudo /opt/panelalpha/pasnap.sh --quickstart
+```
+
+## Optional: Automatic Backups
 
 ```bash
 sudo /opt/panelalpha/pasnap.sh --cron install
-```
-
-Check the status:
-
-```bash
 sudo /opt/panelalpha/pasnap.sh --cron status
 ```
 
 ## Application Type Detection
 
-The tool automatically detects your installation:
+| Type | Paths |
+|------|--------|
+| **multi-server** | `/opt/panelalpha/app` |
+| **single-server** | `/opt/panelalpha/app-lite` + `/opt/panelalpha/shared-hosting` (or `/opt/panelalpha/engine`) |
+| **engine** | `/opt/panelalpha/shared-hosting` or `/opt/panelalpha/engine` without app-lite |
 
-- **Control Panel**: Detected at `/opt/panelalpha/app`
-- **Engine**: Detected at `/opt/panelalpha/engine`
-
-No manual configuration is needed - the tool handles this automatically.
+No manual type flag is required. If detection fails, the tool exits instead of guessing.
 
 ## Next Steps
 
