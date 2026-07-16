@@ -25,12 +25,14 @@ One script. Auto-detects your install. Backs up databases, volumes, config, and 
 ### Installation
 
 ```bash
-# Download
-wget -O /opt/panelalpha/pasnap.sh \
-  https://raw.githubusercontent.com/panelalpha/PanelAlpha-Snapshot-Tool/main/pasnap.sh
-chmod +x /opt/panelalpha/pasnap.sh
+wget -O /opt/panelalpha/pasnap.sh https://raw.githubusercontent.com/panelalpha/PanelAlpha-Snapshot-Tool/main/pasnap.sh
+```
 
-# Install dependencies (restic, jq, rsync)
+```bash
+chmod +x /opt/panelalpha/pasnap.sh
+```
+
+```bash
 sudo /opt/panelalpha/pasnap.sh --install
 ```
 
