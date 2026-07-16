@@ -637,18 +637,24 @@ validate_repository_config() {
         log ERROR "Run: $0 --setup"
         exit 1
     fi
-    [[ -n "${AWS_ACCESS_KEY_ID:-}" ]]     && export AWS_ACCESS_KEY_ID
-    [[ -n "${AWS_SECRET_ACCESS_KEY:-}" ]] && export AWS_SECRET_ACCESS_KEY
+    if [[ -n "${AWS_ACCESS_KEY_ID:-}" ]]; then
+        export AWS_ACCESS_KEY_ID
+    fi
+    if [[ -n "${AWS_SECRET_ACCESS_KEY:-}" ]]; then
+        export AWS_SECRET_ACCESS_KEY
+    fi
+    return 0
 }
 
 check_system_resources() {
     local temp_dir_parent
     temp_dir_parent="$(dirname "$BACKUP_TEMP_DIR")"
-    local available_mb
-    available_mb=$(df "$temp_dir_parent" 2>/dev/null | awk 'NR==2 {print int($4/1024)}') || {
+    local available_mb=""
+    available_mb=$(df "$temp_dir_parent" 2>/dev/null | awk 'NR==2 {print int($4/1024)}' || true)
+    if [[ -z "$available_mb" || ! "$available_mb" =~ ^[0-9]+$ ]]; then
         log WARN "Could not determine available disk space"
         return 0
-    }
+    fi
     local required_mb=3000
     if [[ $available_mb -lt $required_mb ]]; then
         log ERROR "Insufficient disk space: ${available_mb}MB available, ${required_mb}MB required in $temp_dir_parent"
@@ -1646,8 +1652,12 @@ test_repository_connection() {
         exit 1
     fi
 
-    [[ -n "${AWS_ACCESS_KEY_ID:-}" ]]     && export AWS_ACCESS_KEY_ID
-    [[ -n "${AWS_SECRET_ACCESS_KEY:-}" ]] && export AWS_SECRET_ACCESS_KEY
+    if [[ -n "${AWS_ACCESS_KEY_ID:-}" ]]; then
+        export AWS_ACCESS_KEY_ID
+    fi
+    if [[ -n "${AWS_SECRET_ACCESS_KEY:-}" ]]; then
+        export AWS_SECRET_ACCESS_KEY
+    fi
 
     if ! command -v restic &>/dev/null; then
         log ERROR "Restic not installed. Run: $0 --install"

@@ -1,92 +1,119 @@
 <div align="center">
-  <img src="img/logo.svg" alt="PanelAlpha Snapshot Tool" width="100"/>
+  <img src="img/logo.svg" alt="PanelAlpha Snapshot Tool" width="96" />
   <h1>PanelAlpha Snapshot Tool</h1>
-  <h3>Secure Snapshots for PanelAlpha</h3>
-
-  <a href="https://github.com/panelalpha/PanelAlpha-Snapshot-Tool/releases"><img alt="GitHub release" src="https://img.shields.io/github/v/release/panelalpha/PanelAlpha-Snapshot-Tool"></a>
-  <a href="LICENSE"><img alt="License" src="https://img.shields.io/github/license/panelalpha/PanelAlpha-Snapshot-Tool"></a>
-
+  <p><strong>Encrypted disaster-recovery snapshots for PanelAlpha.</strong></p>
+  <p>
+    <a href="https://github.com/panelalpha/PanelAlpha-Snapshot-Tool/releases"><img alt="Release" src="https://img.shields.io/github/v/release/panelalpha/PanelAlpha-Snapshot-Tool"></a>
+    <a href="LICENSE"><img alt="License" src="https://img.shields.io/github/license/panelalpha/PanelAlpha-Snapshot-Tool"></a>
+  </p>
 </div>
 
-## Intro
+---
 
-**PanelAlpha Snapshot Tool** creates encrypted, restorable disaster-recovery snapshots of a PanelAlpha host: databases, Docker volumes, configuration, and (for Engine / single-server) customer data under `/home` and user projects.
+One script. Auto-detects your install. Backs up databases, volumes, config, and (on Engine / single-server) `/home` + user projects. Stored with **Restic AES-256**.
 
-It auto-detects one of three installation types:
-
-| Type | Paths |
-|------|--------|
+| Detected type | Paths |
+| --- | --- |
 | **multi-server** | `/opt/panelalpha/app` |
-| **single-server** | `/opt/panelalpha/app-lite` **and** `/opt/panelalpha/shared-hosting` |
-| **engine** | `/opt/panelalpha/shared-hosting` (without app-lite) |
+| **single-server** | `/opt/panelalpha/app-lite` + `/opt/panelalpha/shared-hosting` |
+| **engine** | `/opt/panelalpha/shared-hosting` |
 
-Snapshots are stored with **Restic (AES-256)**. Without the repository password, restore is impossible.
+> This is **host-level DR** (SSH / sudo). Per-site WordPress backups in the Admin / Client Area are a separate feature.
 
-> This tool is **install-level DR** (SSH/sudo). Per-site WordPress backups in the Admin/Client Area are a separate product feature.
+---
 
-## Features
-
-- Full snapshots: databases, volumes, config, SSL; Engine/single-server also `/home` and `users/`
-- Single-server: engine **plus** app-lite panel DB, `.env`, and `data/api-storage`
-- Local, SFTP, or S3-compatible storage
-- Daily cron automation
-- AES-256 encryption via Restic
-- Auto-detection of installation type (fail-closed if unknown)
-- Simple CLI; optional one-shot `--quickstart`
-
-## Installation
+### Installation
 
 ```bash
-wget -O /opt/panelalpha/pasnap.sh https://raw.githubusercontent.com/panelalpha/PanelAlpha-Snapshot-Tool/main/pasnap.sh
+# Download
+wget -O /opt/panelalpha/pasnap.sh \
+  https://raw.githubusercontent.com/panelalpha/PanelAlpha-Snapshot-Tool/main/pasnap.sh
 chmod +x /opt/panelalpha/pasnap.sh
+
+# Install dependencies (restic, jq, rsync)
 sudo /opt/panelalpha/pasnap.sh --install
 ```
 
-Detailed guides: [Documentation](docs/README.md).
+Requirements: Linux (Debian / Ubuntu recommended), Docker 20.10+, root, ~3GB+ free disk (more if Engine `/home` is large).
 
-## Quick Start
+---
+
+### Quick start
 
 ```bash
-# One-shot: install tools + configure + first snapshot
-sudo ./pasnap.sh --quickstart
+# Configure storage + encryption password, then first snapshot
+sudo /opt/panelalpha/pasnap.sh --quickstart
 
-# Or step by step:
-sudo ./pasnap.sh --setup
-sudo ./pasnap.sh --test-connection
-sudo ./pasnap.sh --verify-database
-sudo ./pasnap.sh --snapshot
-sudo ./pasnap.sh --cron install
+# Or step by step
+sudo /opt/panelalpha/pasnap.sh --setup
+sudo /opt/panelalpha/pasnap.sh --test-connection
+sudo /opt/panelalpha/pasnap.sh --verify-database
+sudo /opt/panelalpha/pasnap.sh --snapshot
+sudo /opt/panelalpha/pasnap.sh --cron install
 ```
 
-## Documentation
+Storage backends: **local**, **SFTP**, or **S3-compatible** (AWS, Hetzner, MinIO, DigitalOcean Spaces, …).
 
-- [Installation Guide](docs/installation.md)
-- [Storage Backends](docs/storage-backends.md)
-- [Usage & Commands](docs/usage.md)
-- [Server Migration](docs/migration.md)
-- [Configuration Reference](docs/configuration.md)
+> [!IMPORTANT]
+> Keep the Restic encryption password offline. Without it, snapshots cannot be restored.
+
+---
+
+### Commands
+
+```bash
+sudo pasnap.sh --snapshot              # Create snapshot
+sudo pasnap.sh --snapshot-bg           # Create in background
+sudo pasnap.sh --list-snapshots        # List snapshots
+sudo pasnap.sh --restore latest        # Restore latest
+sudo pasnap.sh --restore <id>          # Restore specific ID
+sudo pasnap.sh --delete-snapshots <id> # Delete snapshot
+sudo pasnap.sh --verify-database       # Check DB credentials
+sudo pasnap.sh --test-connection       # Check repository
+sudo pasnap.sh --cron install|status|remove
+sudo pasnap.sh --version
+sudo pasnap.sh --help
+```
+
+Typical paths:
+
+| Path | Purpose |
+| --- | --- |
+| `/opt/panelalpha/pasnap.sh` | Script |
+| `/opt/panelalpha/pasnap/.env-backup` | Config (mode `600`) |
+| `/var/log/pasnap.log` | Logs |
+
+---
+
+### What gets snapshotted
+
+**multi-server** — API database, `api-storage` / `database-api-data` / `redis-data`, `.env` / `.env-api`, packages, SSL.
+
+**engine** — Core + users databases, engine volumes, `.env` / `.env-core`, `users/`, `/home`, SSL.
+
+**single-server** — Full engine scope **plus** app-lite panel DB (from `database-core`), `.env`, compose, `data/api-storage`.
+
+---
+
+### Documentation
+
+- [Installation](docs/installation.md)
+- [Storage backends](docs/storage-backends.md)
+- [Usage](docs/usage.md)
+- [Migration](docs/migration.md)
+- [Configuration](docs/configuration.md)
 - [Troubleshooting](docs/troubleshooting.md)
 
-## Requirements
+---
 
-- Ubuntu 18.04+ or compatible Linux
-- Docker 20.10+
-- Root access (sudo)
-- At least 3GB free disk space (more for large `/home` on Engine)
+### Contributing
 
-## Security
+See [CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request.
 
-- All snapshots encrypted with AES-256 (Restic)
-- Config file `/opt/panelalpha/pasnap/.env-backup` mode `600`
-- Database passwords via `MYSQL_PWD` (not CLI args)
-- Store the encryption password offline — it cannot be recovered from the tool
+Issues: [GitHub Issues](https://github.com/panelalpha/PanelAlpha-Snapshot-Tool/issues)
 
-## Support
+---
 
-1. [Troubleshooting](docs/troubleshooting.md)
-2. Logs: `sudo tail -f /var/log/pasnap.log`
-3. [GitHub Issues](https://github.com/panelalpha/PanelAlpha-Snapshot-Tool/issues)
+### License
 
-## License
-
-See [LICENSE](LICENSE).
+[Apache-2.0](LICENSE) — see the license file for details.

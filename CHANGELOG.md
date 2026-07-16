@@ -30,6 +30,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - **Single-server blind spot**: Hosts with both `app-lite` and `shared-hosting` were previously classified as engine-only and skipped panel data.
 - **Auto-update downgrade**: Version check now uses semver comparison and never replaces a newer local script with an older published release.
+- **Empty AWS keys abort snapshot**: `validate_repository_config` no longer returns non-zero when S3 credentials are unset (broke local/SFTP backends under `set -e`).
+- **Engine path**: Detection uses only `/opt/panelalpha/shared-hosting` (removed legacy `/opt/panelalpha/engine`).
 
 ## [1.2.4] - 2026-07-15
 
