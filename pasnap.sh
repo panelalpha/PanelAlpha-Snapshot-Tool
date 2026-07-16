@@ -3172,8 +3172,6 @@ restore_config() {
 
     # Restore configuration files
     if [[ -d "$data_dir/config" ]]; then
-        log INFO "Restoring configuration files..."
-
         # Restore docker-compose.yml
         if [[ -f "$data_dir/config/docker-compose.yml" ]]; then
             cp "$data_dir/config/docker-compose.yml" . 2>/dev/null || true
@@ -3221,9 +3219,11 @@ restore_config() {
             mkdir -p /etc/letsencrypt
             cp -r "$data_dir/config/ssl/letsencrypt/"* /etc/letsencrypt/ 2>/dev/null || true
         fi
-    fi
 
-    log INFO "Configuration files restored from backup ✓"
+        log INFO "Configuration files restored from backup ✓"
+    else
+        log WARN "No config/ directory found in snapshot data ($data_dir) - configuration files were NOT restored"
+    fi
 }
 
 restore_users() {
@@ -3330,15 +3330,29 @@ restore_from_snapshot() {
 
     restore_snapshot "$SNAPSHOT_ID" "$RESTORE_TEMP_DIR"
 
-    # Find data directory
-    local data_dir="$RESTORE_TEMP_DIR"
-    if [[ -d "$RESTORE_TEMP_DIR/tmp" ]]; then
-        data_dir=$(find "$RESTORE_TEMP_DIR/tmp" -name "pasnap-snapshot-*" -type d | head -1)
+    # Find restored snapshot directory.
+    # restic restores files under their original absolute path (e.g.
+    # "$RESTORE_TEMP_DIR/var/tmp/pasnap-snapshot-XXXX/..."), so we locate the
+    # real snapshot root by finding the snapshot-info.txt marker file that is
+    # always written at the top of every snapshot, instead of guessing a
+    # directory name pattern that may not match.
+    local data_dir
+    local info_file
+    info_file=$(find "$RESTORE_TEMP_DIR" -type f -name "snapshot-info.txt" 2>/dev/null | head -1)
+
+    if [[ -n "$info_file" ]]; then
+        data_dir="$(dirname "$info_file")"
+    else
+        # Fallback: try the old directory-name heuristic
+        data_dir=$(find "$RESTORE_TEMP_DIR" -type d -name "pasnap-snapshot-*" 2>/dev/null | head -1)
     fi
 
-    if [[ ! -d "$data_dir" ]]; then
-        log ERROR "Cannot find snapshot data in repository"
-        log ERROR "Snapshot may be corrupted or incompatible"
+    log DEBUG "Using restore data directory: ${data_dir:-<not found>}"
+
+    if [[ -z "$data_dir" || ! -d "$data_dir" || ! -d "$data_dir/databases" && ! -d "$data_dir/config" ]]; then
+        log ERROR "Cannot find snapshot data under $RESTORE_TEMP_DIR"
+        log ERROR "Snapshot may be corrupted, incompatible, or the restic restore did not complete as expected"
+        log ERROR "Contents found: $(find "$RESTORE_TEMP_DIR" -maxdepth 4 2>/dev/null | head -20)"
         exit 1
     fi
 
