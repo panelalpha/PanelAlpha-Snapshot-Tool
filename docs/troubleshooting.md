@@ -275,6 +275,43 @@ There is no silent fallback to a guessed path.
 
 ---
 
+### Admin 2FA / Login Fails After Restore
+
+**Symptom**: Password works but admin two-factor codes (or recovery codes) fail after `--restore`.
+
+**Cause**: Admin 2FA secrets are stored encrypted in the `admins` table (`two_factor_secret`, `two_factor_recovery_codes`) using Laravel’s encrypter keyed by `APP_KEY`. The SQL dump includes those columns; restore must also keep the original `APP_KEY` from the snapshot.
+
+| Installation | File that must keep original `APP_KEY` |
+|---|---|
+| multi-server | `/opt/panelalpha/app/.env-api` (also snapshotted as `config/panel/.env-api`) |
+| single-server | `/opt/panelalpha/app-lite/.env` |
+
+**Do not** regenerate `APP_KEY` after restore (e.g. fresh install then only importing SQL). If the key does not match the ciphertext in the database, 2FA cannot be verified.
+
+**Checks**:
+
+1. Confirm the restored env still has the snapshotted key:
+   ```bash
+   # multi-server
+   grep '^APP_KEY=' /opt/panelalpha/app/.env-api
+   # single-server
+   grep '^APP_KEY=' /opt/panelalpha/app-lite/.env
+   ```
+
+2. During `--snapshot`, logs should include a line like `N admin(s) with 2FA enabled` and `APP_KEY present in snapshotted panel env`.
+
+**Escape hatch** (clears 2FA so the admin can log in and re-enable it):
+
+```bash
+# multi-server
+cd /opt/panelalpha/app
+docker compose exec api php artisan admin:disable-two-factor-authentication admin@example.com --force
+
+# single-server — run the equivalent artisan command in the app-lite/api container
+```
+
+---
+
 ## Log Analysis
 
 ### View Recent Logs

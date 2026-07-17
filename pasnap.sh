@@ -419,6 +419,44 @@ snapshot_path() {
     return 1
 }
 
+# Log admin 2FA row count and warn if APP_KEY is missing from snapshotted panel env.
+# verify_panel_2fa_snapshot compose_dir service user password db_name snap_config_dir
+verify_panel_2fa_snapshot() {
+    local compose_dir="$1"
+    local service="$2"
+    local user="$3"
+    local password="$4"
+    local db_name="$5"
+    local snap_config_dir="$6"
+
+    local container
+    container=$(dc_container_id "$compose_dir" "$service")
+    if [[ -n "$container" ]]; then
+        local count=""
+        count=$(mariadb_exec "$container" "$user" "$password" "$db_name" -N \
+            -e "SELECT COUNT(*) FROM admins WHERE two_factor_confirmed_at IS NOT NULL;" \
+            2>/dev/null || true)
+        if [[ -n "$count" && "$count" =~ ^[0-9]+$ ]]; then
+            log INFO "$count admin(s) with 2FA enabled in database '$db_name'"
+        else
+            log WARN "Could not count admins with 2FA in database '$db_name'"
+        fi
+    fi
+
+    local app_key=""
+    if [[ -f "$snap_config_dir/.env-api" ]]; then
+        app_key=$(get_env_var "APP_KEY" "$snap_config_dir/.env-api")
+    fi
+    if [[ -z "$app_key" && -f "$snap_config_dir/.env" ]]; then
+        app_key=$(get_env_var "APP_KEY" "$snap_config_dir/.env")
+    fi
+    if [[ -z "$app_key" ]]; then
+        log WARN "APP_KEY missing from snapshotted panel env — admin 2FA secrets will not decrypt after restore"
+    else
+        log INFO "APP_KEY present in snapshotted panel env (required for admin 2FA)"
+    fi
+}
+
 # dump_mariadb_database compose_dir service user password db_name outfile
 dump_mariadb_database() {
     local compose_dir="$1"
@@ -1238,6 +1276,9 @@ snapshot_profile_multi_server() {
         [[ -f "$PANEL_DIR/$f" ]] && cp "$PANEL_DIR/$f" "$snap_dir/config/panel/" 2>/dev/null || true
     done
 
+    verify_panel_2fa_snapshot "$PANEL_DIR" "database-api" "panelalpha" "$api_password" \
+        "panelalpha" "$snap_dir/config/panel"
+
     # packages/ directory
     if [[ -d "$PANEL_DIR/packages" ]]; then
         log INFO "Snapshotting packages directory..."
@@ -1424,6 +1465,9 @@ snapshot_profile_single_server() {
     for f in ".env" "docker-compose.yml"; do
         [[ -f "$PANEL_DIR/$f" ]] && cp "$PANEL_DIR/$f" "$snap_dir/config/panel/" 2>/dev/null || true
     done
+
+    verify_panel_2fa_snapshot "$ENGINE_DIR" "database-core" "$panel_user" "$panel_password" \
+        "$panel_db" "$snap_dir/config/panel"
 
     # App-lite data/api-storage path snapshot
     if [[ -d "$PANEL_DIR/data/api-storage" ]]; then
@@ -2303,7 +2347,7 @@ _restore_multi_server() {
         exit 1
     }
 
-    # Restore database from SQL dump
+    # Restore database from SQL dump (sole source of truth for MariaDB data)
     local env_file="$PANEL_DIR/.env"
     local api_password=""
     api_password=$(get_env_var "API_MYSQL_PASSWORD" "$env_file")
@@ -2314,10 +2358,8 @@ _restore_multi_server() {
         log WARN "panelalpha-api.sql not found in snapshot - database not restored"
     fi
 
-    update_system_settings
-
-    # Restore all volumes (including database-api-data which overrides SQL import)
-    for vol in "api-storage" "database-api-data" "redis-data"; do
+    # Application volumes only — do not restore database-api-data (would override SQL)
+    for vol in "api-storage" "redis-data"; do
         restore_volume "$PANEL_DIR" "$vol" "$data_dir/volumes/${vol}.tar.gz" || \
             log WARN "Volume $vol restore failed"
     done
@@ -2326,6 +2368,10 @@ _restore_multi_server() {
     log INFO "Starting all services..."
     dc "$PANEL_DIR" up -d
     sleep 20
+
+    wait_for_database_containers "$PANEL_DIR" "database-api" || \
+        log WARN "database-api not ready after full start"
+    update_system_settings
 
     dc "$PANEL_DIR" ps 2>/dev/null || true
     log INFO "Multi-server restore complete"
@@ -2406,11 +2452,9 @@ _restore_engine() {
         log WARN "No users database dump found in snapshot"
     fi
 
-    # Restore volumes
-    for vol in "core-storage" "database-core-data" "database-users-data"; do
-        restore_volume "$ENGINE_DIR" "$vol" "$data_dir/volumes/${vol}.tar.gz" || \
-            log WARN "Volume $vol restore failed"
-    done
+    # Application volumes only — do not restore database-*-data (would override SQL)
+    restore_volume "$ENGINE_DIR" "core-storage" "$data_dir/volumes/core-storage.tar.gz" || \
+        log WARN "Volume core-storage restore failed"
 
     # Restore users/ and /home
     _restore_users_and_home "$data_dir"
@@ -2511,11 +2555,9 @@ _restore_single_server() {
         log INFO "No panelalpha-panel.sql in snapshot - skipping"
     fi
 
-    # Restore engine volumes
-    for vol in "core-storage" "database-core-data" "database-users-data"; do
-        restore_volume "$ENGINE_DIR" "$vol" "$data_dir/volumes/${vol}.tar.gz" || \
-            log WARN "Volume $vol restore failed"
-    done
+    # Application volumes only — do not restore database-*-data (would override SQL)
+    restore_volume "$ENGINE_DIR" "core-storage" "$data_dir/volumes/core-storage.tar.gz" || \
+        log WARN "Volume core-storage restore failed"
 
     # Restore app-lite data/api-storage
     local applite_storage_src="$data_dir/config/panel/data/api-storage"

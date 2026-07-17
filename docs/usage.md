@@ -102,6 +102,8 @@ Everything from **engine**, plus:
 | Panel DB | Schema from `database-core` using app-lite `DB_*` → `panelalpha-panel.sql` |
 | Panel files | `app-lite/.env`, `docker-compose.yml`, `data/api-storage` |
 
+> **Restore note:** MariaDB data is restored from the SQL dumps only. Docker volumes named `database-*-data` may still appear in a snapshot archive for emergency use, but restore does not extract them over a running database (that would overwrite the SQL import). Application volumes (`api-storage`, `redis-data`, `core-storage`) are restored normally. Keep the original `APP_KEY` from snapshotted panel env so admin 2FA continues to work.
+
 ---
 
 ## Common Workflows

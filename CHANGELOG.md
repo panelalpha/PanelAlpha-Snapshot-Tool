@@ -5,7 +5,7 @@ All notable changes to PanelAlpha Snapshot Tool will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0/).
 
-## [1.3.0] - 2026-07-16
+## [1.3.0] - 2026-07-17
 
 ### Breaking
 - **Installation type names**: Detection now reports `multi-server`, `single-server`, or `engine` (replacing the old `app` / `engine` pair). Restic tags use `panelalpha-<type>-<hostname>`.
@@ -19,19 +19,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Restore type mismatch warning**: Restoring a snapshot taken on a different installation type prompts for confirmation.
 - **Post-setup database check**: `--setup` runs repository connectivity and `--verify-database` after saving config.
 - **AES-256 reminder**: Setup wizard stresses that the Restic encryption password is required for any restore.
+- **Admin 2FA snapshot diagnostics**: After dumping the panel database, the tool logs how many admins have confirmed 2FA and warns if `APP_KEY` is missing from snapshotted panel env (required to decrypt Fortify 2FA secrets after restore).
 
 ### Changed
 - **Simplified codebase**: Rewritten around three declarative profiles; target size ~2.7k lines (was ~3.6k).
 - **Fail-closed snapshots**: Missing critical database containers or required volumes abort the snapshot instead of reporting success with gaps.
 - **Post-upload verification**: After `restic backup`, runs `restic check --read-data-subset=1/10` when available.
 - **Setup defaults**: Suggested local path `/backup/panelalpha`, retention 30 days, hour 02:00.
-- **Documentation**: Installation, usage, troubleshooting, and AGENTS updated for three installation types; Matomo references removed.
+- **Documentation**: Installation, usage, troubleshooting, and AGENTS updated for three installation types; Matomo references removed. Troubleshooting covers admin 2FA / `APP_KEY` after restore and `admin:disable-two-factor-authentication`.
+- **`update_system_settings` timing**: On multi-server restore, host IP / trusted hosts are updated after the full stack is up, so changes apply to the final SQL-restored database.
 
 ### Fixed
 - **Single-server blind spot**: Hosts with both `app-lite` and `shared-hosting` were previously classified as engine-only and skipped panel data.
 - **Auto-update downgrade**: Version check now uses semver comparison and never replaces a newer local script with an older published release.
 - **Empty AWS keys abort snapshot**: `validate_repository_config` no longer returns non-zero when S3 credentials are unset (broke local/SFTP backends under `set -e`).
 - **Engine path**: Detection uses only `/opt/panelalpha/shared-hosting` (removed legacy `/opt/panelalpha/engine`).
+- **Database restore integrity**: Restore no longer extracts `database-*-data` Docker volumes after SQL import. Those volume restores ran against a live MariaDB data directory and overwrote the consistent SQL dump (also wiping multi-server `update_system_settings` changes). MariaDB data is restored from SQL only; application volumes (`api-storage`, `redis-data`, `core-storage`) are still restored.
 
 ## [1.2.4] - 2026-07-15
 

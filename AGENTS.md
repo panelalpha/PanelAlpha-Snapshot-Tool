@@ -46,7 +46,9 @@ Globals: `INSTALLATION_TYPE`, `PANEL_DIR`, `ENGINE_DIR`. Engine always lives at 
 | engine | core + users dumps; engine volumes; `.env` + `.env-core`; `users/`; `/home` |
 | single-server | full engine + app-lite panel dump from `database-core` (`DB_*` from app-lite `.env` → `panelalpha-panel.sql`) + `config/panel/` + `data/api-storage` |
 
-Shared helpers: `dump_mariadb_database`, `dump_mariadb_all`, `snapshot_docker_volume` (fail-closed when required), `snapshot_path`, `resolve_db_password` (env file argument), `dc` / `dc_container_id`.
+Shared helpers: `dump_mariadb_database`, `dump_mariadb_all`, `snapshot_docker_volume` (fail-closed when required), `snapshot_path`, `resolve_db_password` (env file argument), `verify_panel_2fa_snapshot`, `dc` / `dc_container_id`.
+
+**Restore:** MariaDB data comes from SQL dumps only — do **not** restore `database-*-data` volumes after import (overrides SQL / corrupts live data dir). Application volumes (`api-storage`, `redis-data`, `core-storage`) are restored. Admin 2FA needs matching `APP_KEY` from snapshotted `.env-api` / `.env`.
 
 ## Environment Files
 
