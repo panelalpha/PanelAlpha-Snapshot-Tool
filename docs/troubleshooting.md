@@ -124,67 +124,80 @@ Verify API_MYSQL_PASSWORD in /opt/panelalpha/app/.env matches the running databa
 
 2. Check if PanelAlpha is running:
    ```bash
-   cd /opt/panelalpha/app  # Control Panel
+   cd /opt/panelalpha/app              # multi-server
    # or
-   cd /opt/panelalpha/engine  # Engine
+   cd /opt/panelalpha/shared-hosting   # engine / single-server
    docker compose ps
    ```
 
-3. Verify the correct database password variable for your installation type:
+
+3. Verify the correct database password variables for your installation type:
 
    | Installation | Environment file | Password variable | Database user | Container |
    |---|---|---|---|---|
-   | Control Panel | `/opt/panelalpha/app/.env` | `API_MYSQL_PASSWORD` | `panelalpha` | `database-api` |
-   | Engine | `/opt/panelalpha/engine/.env` or `.env-core` | `CORE_MYSQL_PASSWORD` | `core` | `database-core` |
-   | Engine | `/opt/panelalpha/engine/.env` or `.env-core` | `USERS_MYSQL_ROOT_PASSWORD` | `root` | `database-users` |
+   | multi-server | `/opt/panelalpha/app/.env` (or `.env-api`) | `API_MYSQL_PASSWORD` | `panelalpha` | `database-api` |
+   | engine / single-server | `/opt/panelalpha/shared-hosting/.env` | `CORE_MYSQL_PASSWORD` | `core` | `database-core` |
+   | engine / single-server | same as above | `USERS_MYSQL_ROOT_PASSWORD` | `root` | `database-users` |
+   | single-server (panel) | `/opt/panelalpha/app-lite/.env` | `DB_PASSWORD` (+ `DB_DATABASE`, `DB_USERNAME`) | panel user | `database-core` |
 
-   Control Panel example:
+   Multi-server example:
    ```bash
-   grep API_MYSQL_PASSWORD /opt/panelalpha/app/.env
+   grep API_MYSQL_PASSWORD /opt/panelalpha/app/.env /opt/panelalpha/app/.env-api 2>/dev/null
    ```
 
-   Engine example:
+   Engine / single-server example:
    ```bash
-   grep -E 'CORE_MYSQL_PASSWORD|USERS_MYSQL_ROOT_PASSWORD' /opt/panelalpha/engine/.env /opt/panelalpha/engine/.env-core 2>/dev/null
+   grep -E 'CORE_MYSQL_PASSWORD|USERS_MYSQL_ROOT_PASSWORD' \
+     /opt/panelalpha/shared-hosting/.env /opt/panelalpha/shared-hosting/.env-core 2>/dev/null
+   grep -E 'DB_DATABASE|DB_USERNAME|DB_PASSWORD' /opt/panelalpha/app-lite/.env 2>/dev/null
    ```
 
-   You do **not** need to copy the password anywhere else. The Snapshot Tool reads it automatically from the PanelAlpha environment file.
+   You do **not** need to copy the password into pasnap config. The tool reads PanelAlpha env files automatically.
 
 4. Test the database connection manually:
 
-   **Control Panel:**
+   **multi-server:**
    ```bash
    cd /opt/panelalpha/app
    API_PASS=$(grep '^API_MYSQL_PASSWORD=' .env | cut -d'=' -f2-)
    docker compose exec database-api mariadb -u panelalpha -p"$API_PASS" -e "SELECT 1;"
    ```
 
-   **Engine:**
+   **engine / single-server:**
    ```bash
-   cd /opt/panelalpha/engine
+   cd /opt/panelalpha/shared-hosting
    CORE_PASS=$(grep '^CORE_MYSQL_PASSWORD=' .env .env-core 2>/dev/null | head -1 | cut -d'=' -f2-)
    docker compose exec database-core mariadb -u core -p"$CORE_PASS" -e "SELECT 1;"
    ```
 
    On older MySQL-based database images, use `mysql` instead of `mariadb`.
 
-5. If PanelAlpha works but the test above fails, the password in `.env` may be out of sync with the database volume. Compare with the API container:
-   ```bash
-   docker compose exec api printenv DB_PASSWORD
-   ```
-
-   If the values differ, update `API_MYSQL_PASSWORD` in `.env` to match the working value, then synchronize the MariaDB user password or contact support.
+5. If PanelAlpha works but the test above fails, the password in `.env` may be out of sync with the database volume. Compare with the running container env (`MYSQL_PASSWORD` / `DB_PASSWORD`).
 
 6. Verify database container health:
    ```bash
-   docker compose logs database-api  # Control Panel
-   docker compose logs database-core database-users  # Engine
+   docker compose -f /opt/panelalpha/app/docker-compose.yml logs database-api
+   docker compose -f /opt/panelalpha/shared-hosting/docker-compose.yml logs database-core database-users
    ```
 
 7. Review snapshot logs:
    ```bash
    sudo tail -100 /var/log/pasnap.log
    ```
+
+---
+
+### Installation Type Not Detected
+
+**Symptom**: `PanelAlpha installation not detected` and listed expected paths.
+
+**Solution**: Confirm the host layout matches one of:
+
+- multi-server: `/opt/panelalpha/app/docker-compose.yml`
+- single-server: `/opt/panelalpha/app-lite/docker-compose.yml` **and** `/opt/panelalpha/shared-hosting/docker-compose.yml`
+- engine: `/opt/panelalpha/shared-hosting/docker-compose.yml` without app-lite
+
+There is no silent fallback to a guessed path.
 
 ---
 
@@ -259,6 +272,43 @@ Verify API_MYSQL_PASSWORD in /opt/panelalpha/app/.env matches the running databa
    ```bash
    docker compose restart nginx
    ```
+
+---
+
+### Admin 2FA / Login Fails After Restore
+
+**Symptom**: Password works but admin two-factor codes (or recovery codes) fail after `--restore`.
+
+**Cause**: Admin 2FA secrets are stored encrypted in the `admins` table (`two_factor_secret`, `two_factor_recovery_codes`) using Laravel’s encrypter keyed by `APP_KEY`. The SQL dump includes those columns; restore must also keep the original `APP_KEY` from the snapshot.
+
+| Installation | File that must keep original `APP_KEY` |
+|---|---|
+| multi-server | `/opt/panelalpha/app/.env-api` (also snapshotted as `config/panel/.env-api`) |
+| single-server | `/opt/panelalpha/app-lite/.env` |
+
+**Do not** regenerate `APP_KEY` after restore (e.g. fresh install then only importing SQL). If the key does not match the ciphertext in the database, 2FA cannot be verified.
+
+**Checks**:
+
+1. Confirm the restored env still has the snapshotted key:
+   ```bash
+   # multi-server
+   grep '^APP_KEY=' /opt/panelalpha/app/.env-api
+   # single-server
+   grep '^APP_KEY=' /opt/panelalpha/app-lite/.env
+   ```
+
+2. During `--snapshot`, logs should include a line like `N admin(s) with 2FA enabled` and `APP_KEY present in snapshotted panel env`.
+
+**Escape hatch** (clears 2FA so the admin can log in and re-enable it):
+
+```bash
+# multi-server
+cd /opt/panelalpha/app
+docker compose exec api php artisan admin:disable-two-factor-authentication admin@example.com --force
+
+# single-server — run the equivalent artisan command in the app-lite/api container
+```
 
 ---
 

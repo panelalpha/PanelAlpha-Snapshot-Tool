@@ -1,6 +1,6 @@
 # Usage & Commands
 
-Complete reference for all PanelAlpha Snapshot Tool commands.
+Complete reference for PanelAlpha Snapshot Tool commands (v1.3.0+).
 
 ## Command Reference
 
@@ -12,7 +12,15 @@ Complete reference for all PanelAlpha Snapshot Tool commands.
 sudo ./pasnap.sh --snapshot
 ```
 
-Creates a complete backup of your PanelAlpha installation including databases, Docker volumes, and configuration files.
+Creates a full encrypted backup for the detected installation type.
+
+#### Create Snapshot in Background
+
+```bash
+sudo ./pasnap.sh --snapshot-bg
+```
+
+Runs `--snapshot` under `nohup` so it survives terminal close. Progress: `tail -f /var/log/pasnap.log`.
 
 #### List Snapshots
 
@@ -20,155 +28,103 @@ Creates a complete backup of your PanelAlpha installation including databases, D
 sudo ./pasnap.sh --list-snapshots
 ```
 
-Displays all available snapshots with their IDs, dates, and sizes.
-
 #### Delete a Snapshot
 
 ```bash
 sudo ./pasnap.sh --delete-snapshots <snapshot-id>
 ```
 
-Remove a specific snapshot by its ID (e.g., `a1b2c3d4`).
-
 ---
 
 ### Restore Operations
 
-#### Restore Latest Snapshot
-
 ```bash
 sudo ./pasnap.sh --restore latest
-```
-
-Restores from the most recent snapshot.
-
-#### Restore Specific Snapshot
-
-```bash
 sudo ./pasnap.sh --restore <snapshot-id>
 ```
 
-Restores from a specific snapshot (e.g., `a1b2c3d4`).
+> Warning: restore replaces current data for the stacks on this host.
 
-> ⚠️ **Warning**: Restoration will replace all current data!
+If the snapshot was taken on a different installation type than the current host, the tool warns and asks for confirmation.
 
 ---
 
 ### Automation
 
-#### Install Cron Job
-
 ```bash
 sudo ./pasnap.sh --cron install
-```
-
-Sets up automatic daily snapshots.
-
-#### Check Cron Status
-
-```bash
 sudo ./pasnap.sh --cron status
-```
-
-Shows current automation status and next scheduled run.
-
-#### Remove Cron Job
-
-```bash
 sudo ./pasnap.sh --cron remove
 ```
 
-Disables automatic snapshots.
-
 ---
 
-### Setup & Configuration
-
-#### Interactive Setup
+### Setup & Diagnostics
 
 ```bash
-sudo ./pasnap.sh --setup
+sudo ./pasnap.sh --install           # Dependencies (restic, jq, rsync)
+sudo ./pasnap.sh --setup             # Interactive storage + encryption password
+sudo ./pasnap.sh --quickstart        # install (if needed) + setup (if needed) + snapshot
+sudo ./pasnap.sh --test-connection   # Repository connectivity
+sudo ./pasnap.sh --verify-database   # DB credentials for the detected profile
+sudo ./pasnap.sh --update            # Force self-update check
+sudo ./pasnap.sh --version
+sudo ./pasnap.sh --help
 ```
-
-Launches the interactive setup wizard for configuring storage backend.
-
-#### Install Dependencies
-
-```bash
-sudo ./pasnap.sh --install
-```
-
-Installs required tools and sets up the environment.
-
-#### Test Connection
-
-```bash
-sudo ./pasnap.sh --test-connection
-```
-
-Verifies connectivity to the configured storage backend.
 
 ---
 
 ## What Gets Captured
 
-### Databases
+### multi-server (`/opt/panelalpha/app`)
 
-| Component | Description |
-|-----------|-------------|
-| PanelAlpha API Database | Complete MariaDB/MySQL dump with routines and triggers |
-| Matomo Database | Analytics and statistics data |
-| Users Databases | (Engine only) Per-user databases |
+| Component | Details |
+|-----------|---------|
+| Database | `database-api` → `panelalpha` dump |
+| Volumes | `api-storage`, `database-api-data`, `redis-data` |
+| Config | `docker-compose.yml`, `.env`, `.env-api`, `packages/`, Let's Encrypt |
 
-### Docker Volumes
+### engine (`/opt/panelalpha/shared-hosting`)
 
-| Volume | Description |
-|--------|-------------|
-| `api-storage` | PanelAlpha application data |
-| `database-api-data` | MariaDB data files |
-| `redis-data` | Cache and session data |
-| `core-storage` | (Engine only) Core application data |
+| Component | Details |
+|-----------|---------|
+| Databases | Core + all users DBs |
+| Volumes | `core-storage`, `database-core-data`, `database-users-data` |
+| Paths | `users/` projects, full `/home` |
+| Config | `.env`, `.env-core`, compose, SSL |
 
-### Configuration Files
+### single-server (`app-lite` + engine)
 
-| File/Directory | Description |
-|----------------|-------------|
-| `docker-compose.yml` | Container orchestration configuration |
-| `.env` files | Environment variables and secrets |
-| `packages/` | Custom packages and extensions |
-| SSL certificates | Let's Encrypt certificates |
-| Nginx configurations | Web server settings |
+Everything from **engine**, plus:
+
+| Component | Details |
+|-----------|---------|
+| Panel DB | Schema from `database-core` using app-lite `DB_*` → `panelalpha-panel.sql` |
+| Panel files | `app-lite/.env`, `docker-compose.yml`, `data/api-storage` |
+
+> **Restore note:** MariaDB data is restored from the SQL dumps only. Docker volumes named `database-*-data` may still appear in a snapshot archive for emergency use, but restore does not extract them over a running database (that would overwrite the SQL import). Application volumes (`api-storage`, `redis-data`, `core-storage`) are restored normally. Keep the original `APP_KEY` from snapshotted panel env so admin 2FA continues to work.
 
 ---
 
 ## Common Workflows
 
-### Daily Backup Routine
+### Daily backup
 
 ```bash
-# Create snapshot
 sudo ./pasnap.sh --snapshot
-
-# Verify it was created
 sudo ./pasnap.sh --list-snapshots
 ```
 
-### Before Major Changes
+### Before major changes
 
 ```bash
-# Create a snapshot before updates
 sudo ./pasnap.sh --snapshot
-
-# Note the snapshot ID for potential rollback
-sudo ./pasnap.sh --list-snapshots
+sudo ./pasnap.sh --list-snapshots   # note the ID
 ```
 
-### Cleanup Old Snapshots
+### Fresh host
 
 ```bash
-# List all snapshots
-sudo ./pasnap.sh --list-snapshots
-
-# Delete old ones
-sudo ./pasnap.sh --delete-snapshots old-snapshot-id
+sudo ./pasnap.sh --quickstart
+sudo ./pasnap.sh --cron install
 ```

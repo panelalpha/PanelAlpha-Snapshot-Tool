@@ -6,7 +6,7 @@ Complete reference for all configuration options.
 
 Configuration is stored in `/opt/panelalpha/pasnap/.env-backup`.
 
-Older installations may still have a legacy file at `/opt/panelalpha/app/.env-backup` (Control Panel) or `/opt/panelalpha/engine/.env-backup` (Engine). The tool migrates that file to `/opt/panelalpha/pasnap/.env-backup` automatically on first run.
+Older installations may still have a legacy file at `/opt/panelalpha/app/.env-backup`. The tool migrates that file to `/opt/panelalpha/pasnap/.env-backup` automatically on first run.
 
 ## Repository Settings
 
@@ -79,7 +79,13 @@ Default: `2` (2:00 AM)
 
 ### BACKUP_TAG_PREFIX
 
-Prefix for snapshot tags to identify backups.
+Legacy prefix field kept in the config file for compatibility. Effective Restic tags are built as:
+
+```text
+panelalpha-<installation-type>-<hostname>
+```
+
+where `<installation-type>` is `multi-server`, `single-server`, or `engine`. Additional tags: `databases`, `volumes`, `config` (and `users` / `home` for engine and single-server).
 
 ```bash
 BACKUP_TAG_PREFIX="panelalpha"

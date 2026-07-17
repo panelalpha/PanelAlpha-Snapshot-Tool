@@ -1,178 +1,90 @@
 # Agent Instructions for PanelAlpha Snapshot Tool
 
-This file provides essential context for AI agents working on the PanelAlpha Snapshot Tool project.
+Context for AI agents working on the PanelAlpha Snapshot Tool (v1.3.0+).
 
 ## Project Overview
 
-**PanelAlpha Snapshot Tool** is a bash-based backup and disaster recovery solution for PanelAlpha Control Panel and Engine. It uses Restic for secure, incremental backups and supports multiple storage backends (local, SFTP, S3).
+Standalone bash CLI for **host-level disaster recovery** of PanelAlpha using **Restic (AES-256)**. Not the same as per-site application backups in the Admin/Client Area.
 
 ### Key Technologies
-- **Language**: Bash (shell scripting)
-- **Backup Engine**: Restic
-- **Containerization**: Docker & Docker Compose
-- **Databases**: MySQL/MariaDB
-- **Supported Platforms**: Ubuntu 18.04+, compatible Linux distributions
+
+- Bash (`set -euo pipefail`)
+- Restic, Docker Compose, MariaDB client in containers (`mariadb` / `mariadb-dump`)
 
 ## Project Structure
 
 ```
-/panelalpha-snapshoot-tool/
-├── pasnap.sh              # Main script (3,400+ lines)
-├── README.md              # Human-readable documentation
-├── CHANGELOG.md           # Version history
-├── CONTRIBUTING.md        # Contribution guidelines
-├── LICENSE                # Apache 2.0 license
-├── .editorconfig          # Editor configuration
-├── mkdocs.yml             # Documentation site config
-├── docs/                  # Documentation directory
-│   ├── usage.md
-│   ├── configuration.md
-│   ├── migration.md
-│   ├── storage-backends.md
-│   └── troubleshooting.md
-├── img/                   # Images and logos
-└── .github/               # GitHub templates and workflows
-    ├── workflows/
-    ├── ISSUE_TEMPLATE/
-    └── PULL_REQUEST_TEMPLATE.md
+pasnap-tool/
+├── pasnap.sh              # Main script (single distributable file)
+├── README.md
+├── CHANGELOG.md
+├── AGENTS.md
+└── docs/                  # User documentation
 ```
 
-## Critical Code Patterns
-
-### 1. Application Type Detection
-The script auto-detects the PanelAlpha installation type:
+## Installation Detection (critical)
 
 ```bash
-detect_panelalpha_type() {
-    if [[ -d "/opt/panelalpha/shared-hosting" && -f "/opt/panelalpha/shared-hosting/docker-compose.yml" ]]; then
-        echo "engine"
-    elif [[ -d "/opt/panelalpha/engine" && -f "/opt/panelalpha/engine/docker-compose.yml" ]]; then
-        echo "engine"
-    elif [[ -d "/opt/panelalpha/app" && -f "/opt/panelalpha/app/docker-compose.yml" ]]; then
-        echo "app"
-    else
-        echo "unknown"
-    fi
+detect_installation() {
+    # Priority:
+    # 1. app-lite + shared-hosting → single-server
+    # 2. shared-hosting            → engine
+    # 3. app                       → multi-server
+    # 4. else                      → unknown (fail via require_installation)
 }
 ```
 
-### 2. Environment File Handling
-**CRITICAL**: Engine installations may have BOTH `.env` AND `.env-core` files. Always handle both:
+Globals: `INSTALLATION_TYPE`, `PANEL_DIR`, `ENGINE_DIR`. Engine always lives at `/opt/panelalpha/shared-hosting` (there is no `/opt/panelalpha/engine` install path).
+
+**Never** fall back from `unknown` to multi-server paths.
+
+## Profile Manifests
+
+| Type | Snapshot scope |
+|------|----------------|
+| multi-server | `database-api` / panelalpha; volumes under `app`; `.env` + `.env-api`; packages; SSL |
+| engine | core + users dumps; engine volumes; `.env` + `.env-core`; `users/`; `/home` |
+| single-server | full engine + app-lite panel dump from `database-core` (`DB_*` from app-lite `.env` → `panelalpha-panel.sql`) + `config/panel/` + `data/api-storage` |
+
+Shared helpers: `dump_mariadb_database`, `dump_mariadb_all`, `snapshot_docker_volume` (fail-closed when required), `snapshot_path`, `resolve_db_password` (env file argument), `verify_panel_2fa_snapshot`, `dc` / `dc_container_id`.
+
+**Restore:** MariaDB data comes from SQL dumps only — do **not** restore `database-*-data` volumes after import (overrides SQL / corrupts live data dir). Application volumes (`api-storage`, `redis-data`, `core-storage`) are restored. Admin 2FA needs matching `APP_KEY` from snapshotted `.env-api` / `.env`.
+
+## Environment Files
+
+- Engine: always consider both `.env` and `.env-core`
+- Multi-server: `.env` and `.env-api` for `API_MYSQL_PASSWORD`
+- Single-server panel: `/opt/panelalpha/app-lite/.env` (`DB_DATABASE`, `DB_USERNAME`, `DB_PASSWORD`)
+
+## Arithmetic with `set -e`
 
 ```bash
-# Environment files to always check
-local env_files=(".env" ".env-core")
-for env_file in "${env_files[@]}"; do
-    if [[ -f "$env_file" ]]; then
-        # Process file
-    fi
-done
-```
-
-### 3. Database Operations
-The script handles two database types for Engine:
-- **Core Database**: `database-core` service, user: `core`
-- **Users Database**: `database-users` service, user: `root`
-
-For Control Panel:
-- **API Database**: `database-api` service, user: `panelalpha`
-
-### 4. Arithmetic Operations
-**IMPORTANT**: Due to `set -euo pipefail`, use this pattern:
-```bash
-# DON'T: ((var++)) - exits with code 1 when var is 0
-# DO: var=$((var + 1))
+# DON'T: ((var++))
+# DO:
 counter=$((counter + 1))
 ```
 
-### 5. Error Handling
-All functions should handle errors gracefully:
-```bash
-if ! some_command; then
-    log ERROR "Operation failed"
-    return 1
-fi
-```
+## Security
 
-## Common Tasks
+- Config: `/opt/panelalpha/pasnap/.env-backup` mode `600`
+- Never log passwords; use `MYSQL_PWD` for MariaDB
+- Restic password is mandatory for restore — surface that in UX
 
-### Adding a New Storage Backend
-1. Update `setup_config()` function (around line 993)
-2. Add validation in `validate_repository_config()`
-3. Update documentation in `docs/storage-backends.md`
+## Testing
 
-### Modifying Database Backup Logic
-1. Update `create_database_snapshot()` (around line 1229)
-2. Update `restore_databases()` (around line 2649)
-3. Test with both Engine and Control Panel configurations
-
-### Adding New Configuration Options
-1. Add to `setup_config()` interactive prompts
-2. Update `load_configuration()` for defaults
-3. Document in `docs/configuration.md`
-
-## Testing Guidelines
-
-### Syntax Check
 ```bash
 bash -n pasnap.sh
+# On real hosts: --verify-database, --snapshot, --list-snapshots per type
 ```
 
-### Test Scenarios
-1. **Fresh install**: `--install` then `--setup`
-2. **Snapshot creation**: `--snapshot`
-3. **Restore**: `--restore latest`
-4. **Cron setup**: `--cron install`
+## Versioning
 
-### Common Issues to Watch For
-1. **Line endings**: Must be LF (Unix), not CRLF (Windows)
-2. **Permissions**: Script must be executable
-3. **Docker detection**: Both `docker-compose` and `docker compose` commands
-4. **MySQL compatibility**: Works with both MySQL and MariaDB
-
-## Security Considerations
-
-1. **Password handling**: Never log passwords, use temp files for MySQL credentials
-2. **File permissions**: Config files should be 600, directories 700
-3. **Sensitive data**: Filtered from logs automatically
-
-## Version Management
-
-- Current version defined in `readonly SCRIPT_VERSION="x.x.x"`
-- Update `CHANGELOG.md` with each change
-- Follow semantic versioning (MAJOR.MINOR.PATCH)
-
-## Documentation
-
-- Update `docs/` files for user-facing changes
-- Update `CHANGELOG.md` for all changes
-- Keep `README.md` concise - detailed docs go in `docs/`
-
-## Code Style
-
-- Indentation: 4 spaces
-- Line endings: LF (Unix)
-- Encoding: UTF-8
-- Max line length: ~120 characters (soft limit)
-
-See `.editorconfig` for editor-specific settings.
+- `readonly SCRIPT_VERSION="x.x.x"` in `pasnap.sh`
+- Update `CHANGELOG.md` and docs when behavior changes
+- Semantic versioning
 
 ## Common Pitfalls
 
-1. **Forgetting Engine has two env files**: Always check both `.env` and `.env-core`
-2. **Using `((var++))`**: Replace with `var=$((var + 1))`
-3. **Not handling both docker compose syntaxes**: Support both `docker-compose` and `docker compose`
-4. **Division by zero**: Always check for zero before division
-
-## Resources
-
-- **Main script**: `pasnap.sh` (3,400+ lines, thoroughly commented)
-- **Documentation**: `docs/` directory
-- **Changelog**: `CHANGELOG.md` (version history)
-- **License**: Apache 2.0
-
-## Contact
-
-- Issues: https://github.com/panelalpha/PanelAlpha-Snapshot-Tool/issues/
-- Website: https://panelalpha.com
-- Documentation: https://panelalpha.com/documentation/
+1. Forgetting single-server needs **both** stacks in snapshot and restore
+2. Silent defaults for `unknown` (removed in 1.3.0)
+3. Confusing this tool with product site backups
