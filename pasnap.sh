@@ -9,7 +9,7 @@ set -euo pipefail
 # CONSTANTS
 # ======================
 
-readonly SCRIPT_VERSION="1.3.0"
+readonly SCRIPT_VERSION="1.3.1"
 readonly SCRIPT_NAME="PanelAlpha Snapshot & Restore Tool"
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -2142,6 +2142,69 @@ update_system_settings() {
         log WARN "Could not update trusted_hosts"
 }
 
+# Keep an env assignment, or append it. Value must not contain newlines.
+upsert_env_var() {
+    local key="$1"
+    local value="$2"
+    local file="$3"
+
+    if grep -q "^${key}=" "$file" 2>/dev/null; then
+        sed -i "s|^${key}=.*|${key}=${value}|" "$file"
+    else
+        printf '\n%s=%s\n' "$key" "$value" >> "$file"
+    fi
+}
+
+# Admin login by IP needs the address in SANCTUM_STATEFUL_DOMAINS.
+# Do not also put that IP in trusted_hosts: SetSessionDomain would set the
+# session cookie Domain to the raw IP, and browsers drop that cookie.
+sync_sanctum_stateful_domains() {
+    local env_file="$1"
+    if [[ ! -f "$env_file" ]]; then
+        log WARN "No $env_file — skipping Sanctum stateful domains"
+        return 0
+    fi
+
+    local hostname_fqdn ip public_ip
+    hostname_fqdn=$(hostname -f 2>/dev/null || hostname 2>/dev/null || true)
+    ip=$(hostname -I 2>/dev/null | awk '{print $1}' || true)
+    public_ip=$(curl -4 -fsS --max-time 5 https://ipv4.icanhazip.com 2>/dev/null | tr -d '[:space:]' || true)
+
+    local current=""
+    current=$(get_env_var "SANCTUM_STATEFUL_DOMAINS" "$env_file")
+
+    local candidates=()
+    local part extra
+    if [[ -n "$current" ]]; then
+        IFS=',' read -r -a candidates <<< "$current"
+    fi
+    for extra in "$hostname_fqdn" "${hostname_fqdn}:8443" "$ip" "${ip}:8443" "$public_ip" "${public_ip}:8443"; do
+        [[ -n "$extra" && "$extra" != ":8443" ]] && candidates+=("$extra")
+    done
+
+    local merged="" seen=" "
+    for part in "${candidates[@]}"; do
+        part=$(printf '%s' "$part" | tr -d '[:space:]')
+        [[ -z "$part" ]] && continue
+        if [[ "$seen" != *" ${part} "* ]]; then
+            seen="${seen}${part} "
+            if [[ -n "$merged" ]]; then
+                merged="${merged},${part}"
+            else
+                merged="$part"
+            fi
+        fi
+    done
+
+    if [[ -z "$merged" ]]; then
+        log WARN "Could not determine hosts for Sanctum stateful domains"
+        return 0
+    fi
+
+    upsert_env_var "SANCTUM_STATEFUL_DOMAINS" "$merged" "$env_file"
+    log INFO "Sanctum stateful domains updated in $env_file"
+}
+
 # ======================
 # RESTORE CONFIG HELPERS
 # ======================
@@ -2338,6 +2401,7 @@ _restore_multi_server() {
 
     # Restore panel config
     _restore_config_panel_dir "$data_dir" "$PANEL_DIR" "true"
+    sync_sanctum_stateful_domains "$PANEL_DIR/.env-api"
 
     # Start only the database container
     log INFO "Starting database-api..."
@@ -2485,6 +2549,7 @@ _restore_single_server() {
     # Restore configs
     _restore_config_engine_dir "$data_dir" "$ENGINE_DIR"
     _restore_config_panel_dir  "$data_dir" "$PANEL_DIR" "false"
+    sync_sanctum_stateful_domains "$PANEL_DIR/.env"
 
     # Start engine database containers
     log INFO "Starting engine database containers..."

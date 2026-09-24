@@ -48,7 +48,7 @@ Globals: `INSTALLATION_TYPE`, `PANEL_DIR`, `ENGINE_DIR`. Engine always lives at 
 
 Shared helpers: `dump_mariadb_database`, `dump_mariadb_all`, `snapshot_docker_volume` (fail-closed when required), `snapshot_path`, `resolve_db_password` (env file argument), `verify_panel_2fa_snapshot`, `dc` / `dc_container_id`.
 
-**Restore:** MariaDB data comes from SQL dumps only — do **not** restore `database-*-data` volumes after import (overrides SQL / corrupts live data dir). Application volumes (`api-storage`, `redis-data`, `core-storage`) are restored. Admin 2FA needs matching `APP_KEY` from snapshotted `.env-api` / `.env`.
+**Restore:** MariaDB data comes from SQL dumps only — do **not** restore `database-*-data` volumes after import (overrides SQL / corrupts live data dir). Application volumes (`api-storage`, `redis-data`, `core-storage`) are restored. Admin 2FA needs matching `APP_KEY` from snapshotted `.env-api` / `.env`. After panel config is restored, refresh Sanctum stateful hosts for the new server address. Do not put that address in `trusted_hosts`.
 
 ## Environment Files
 
