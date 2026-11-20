@@ -284,7 +284,7 @@ apt install -y docker.io docker-compose restic jq rsync
 
 (For maintainers)
 
-1. Update version in `pasnap.sh`
+1. Update `SCRIPT_VERSION` in `src/01-core.sh` and run `./build.sh`
 2. Update CHANGELOG.md
 3. Create git tag: `git tag -a v1.x.x -m "Release v1.x.x"`
 4. Push tag: `git push origin v1.x.x`

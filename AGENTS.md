@@ -15,12 +15,18 @@ Standalone bash CLI for **host-level disaster recovery** of PanelAlpha using **R
 
 ```
 pasnap-tool/
-├── pasnap.sh              # Main script (single distributable file)
+├── src/                   # Script source, one module per area; edit these
+├── build.sh               # Joins src/[0-9][0-9]-*.sh into pasnap.sh (--check in CI)
+├── pasnap.sh              # Built file users download; do not edit by hand
 ├── README.md
 ├── CHANGELOG.md
 ├── AGENTS.md
 └── docs/                  # User documentation
 ```
+
+`pasnap.sh` must stay one self-contained file: users `wget` it and installed copies
+update themselves from `main/pasnap.sh`. Never make it source other files. After
+editing `src/`, run `./build.sh` and commit both.
 
 ## Installation Detection (critical)
 
@@ -48,7 +54,9 @@ Globals: `INSTALLATION_TYPE`, `PANEL_DIR`, `ENGINE_DIR`. Engine always lives at 
 
 Shared helpers: `dump_mariadb_database`, `dump_mariadb_all`, `snapshot_docker_volume` (fail-closed when required), `snapshot_path`, `resolve_db_password` (env file argument), `verify_panel_2fa_snapshot`, `dc` / `dc_container_id`.
 
-**Restore:** MariaDB data comes from SQL dumps only — do **not** restore `database-*-data` volumes after import (overrides SQL / corrupts live data dir). Application volumes (`api-storage`, `redis-data`, `core-storage`) are restored. Admin 2FA needs matching `APP_KEY` from snapshotted `.env-api` / `.env`.
+**Restore:** MariaDB data comes from SQL dumps only — do **not** restore `database-*-data` volumes after import (overrides SQL / corrupts live data dir). Application volumes (`api-storage`, `core-storage`) are restored. Multi Server `redis-data` is snapshotted but emptied on restore (it holds the job queue; replaying old jobs repeats their side effects). The root crontab is saved; restore adds back only lines with `/opt/panelalpha/` (not `pasnap.sh`). Engine `users/` is copied in full (`snapshot_path ... all`). Admin 2FA needs matching `APP_KEY` from snapshotted `.env-api` / `.env`. After panel config is restored, extend `SANCTUM_STATEFUL_DOMAINS` only when it already lists hosts (empty means the panel picks hosts per request; filling it breaks login on panel domains). Never overwrite `trusted_hosts` (installer default `*`). Restic lists snapshots oldest first: pick the newest with `sort_by(.time) | last`. Wait for MariaDB with `mariadb-admin --protocol=tcp -h 127.0.0.1 ping` (socket ping answers during image init).
+
+Multi Server layout is the same from 0.9.1 to 1.9.8.6 (`database-api`, user `panelalpha`, `API_MYSQL_PASSWORD` in `.env`). Before 1.8.5 there is also `database-matomo` (user `matomo`, `MATOMO_MYSQL_PASSWORD`) and the `matomo` volume. nginx mounts `SSL_CERT_FULLCHAIN` / `SSL_CERT_PRIVKEY` from `.env` (installer default `./crt/server.*`).
 
 ## Environment Files
 
@@ -73,7 +81,7 @@ counter=$((counter + 1))
 ## Testing
 
 ```bash
-bash -n pasnap.sh
+./build.sh --check
 # On real hosts: --verify-database, --snapshot, --list-snapshots per type
 ```
 

@@ -5,6 +5,35 @@ All notable changes to PanelAlpha Snapshot Tool will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0/).
 
+## [1.4.0] - 2026-11-20
+
+### Fixed
+- **`--restore latest` restored the oldest snapshot**: Restic lists snapshots oldest first and the tool took the first one. It now takes the newest and logs when and on which host it was taken.
+- **SSL certificates were never restored**: The snapshot stored `/etc/letsencrypt` in one folder and the restore looked in another. The installer's default certificate in `crt/` and certificate files outside `/etc/letsencrypt` were not saved at all. All of them are now saved and restored, and the restore says which certificate file named in `.env` is still missing (nginx does not start without it).
+- **Login broke on panel domains after a restore**: The restore replaced `trusted_hosts` (default `*`) with the server hostname and filled an empty `SANCTUM_STATEFUL_DOMAINS` with the hostname and IP address. Logging in on the panel's own domains then failed. `trusted_hosts` is now left as restored, and `SANCTUM_STATEFUL_DOMAINS` is only extended when it already lists hosts.
+- **Restore could start before the database was ready**: On first start the MariaDB image runs a temporary server, and the readiness check answered "ready" before the panel user existed. The check now goes over TCP, which the temporary server does not open.
+- **Printed restore command did not work**: After a snapshot the tool printed the full 64-character ID, which `--restore` rejects. It now prints the 8-character short ID.
+- **Panel code in snapshots was incomplete**: `packages/` was saved without `vendor/` and `cache/` folders. It is now saved in full, so the restored code is complete.
+
+- **Engine `users/` copied with gaps**: Folders named `vendor`, `cache`, `.git` and `node_modules` and `*.log` files were skipped. Customer project files are now copied in full.
+- **Old queued jobs ran again after a restore**: Multi Server restored `redis-data`, so jobs queued before the snapshot ran a second time. Redis now starts empty.
+
+### Added
+- **Root crontab**: Snapshots save the `root` crontab. A restore adds back the jobs that run PanelAlpha scripts, such as `letsencrypt-renew.sh`.
+- **Matomo on panels older than 1.8.5**: The Matomo database and the `matomo` volume are saved and restored.
+- **Panel version check**: Snapshots record the panel version from `/opt/panelalpha/app/version`. A restore onto another version asks before it goes on.
+- **Database errors in the log**: When a dump or import fails, the last lines of the MariaDB error go to the log.
+- **`src/` and `build.sh`**: The script is kept as modules in `src/`. `./build.sh` joins them into `pasnap.sh`, which stays one file for download and self-update. CI checks that the two match.
+
+### Changed
+- **Larger Multi Server snapshots**: `packages/` now includes `vendor/`.
+- **README** rewritten.
+
+## [1.3.1] - 2026-09-24
+
+### Added
+- **Sanctum hosts after restore**: Restore updates the panel env so admin login still works on the new server address.
+
 ## [1.3.0] - 2026-07-17
 
 ### Breaking
