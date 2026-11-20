@@ -1,6 +1,6 @@
 <div align="center">
 
-<p align="center"><picture><source media="(prefers-color-scheme: dark)" srcset=".github/assets/panelalpha.svg"><img src=".github/assets/panelalpha-light.svg" alt="PanelAlpha Snapshot Tool" width="360"></picture></p>
+<p align="center"><img src="img/logo.svg" alt="PanelAlpha Snapshot Tool" width="120"></p>
 
 <h1>Snapshots of a whole<br>PanelAlpha server.</h1>
 
