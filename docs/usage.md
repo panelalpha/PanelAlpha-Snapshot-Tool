@@ -80,9 +80,11 @@ sudo ./pasnap.sh --help
 
 | Component | Details |
 |-----------|---------|
-| Database | `database-api` → `panelalpha` dump |
-| Volumes | `api-storage`, `database-api-data`, `redis-data` |
-| Config | `docker-compose.yml`, `.env`, `.env-api`, `packages/`, Let's Encrypt |
+| Database | `database-api` → `panelalpha` dump; before 1.8.5 also `database-matomo` → `matomo` |
+| Volumes | `api-storage`, `database-api-data`, `redis-data`; before 1.8.5 also `matomo` |
+| Config | `docker-compose.yml`, `.env`, `.env-api`, `version`, `packages/` (with `vendor/`) |
+| SSL | `crt/`, `/etc/letsencrypt`, other files named in `SSL_CERT_FULLCHAIN` / `SSL_CERT_PRIVKEY` |
+| Cron | `root` crontab (restore adds back the jobs under `/opt/panelalpha/`) |
 
 ### engine (`/opt/panelalpha/shared-hosting`)
 
