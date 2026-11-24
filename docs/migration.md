@@ -44,8 +44,9 @@ sudo cat /opt/panelalpha/pasnap/.env-backup
 
 #### 1. Install PanelAlpha
 
-Perform a basic PanelAlpha installation of the **same type** as the source host
-(multi-server, single-server, or engine). Restoring across different types is not
+Perform a basic PanelAlpha installation of the **same type and the same panel version** as the
+source host (multi-server, single-server or engine). The tool asks before it restores a snapshot
+taken on another panel version, because the restored database would not match the installed code. Restoring across different types is not
 supported automatically — the tool will warn if types mismatch.
 
 #### 2. Install Snapshot Tool
@@ -96,13 +97,18 @@ sudo ./pasnap.sh --restore latest
 
 The restore automatically:
 
-- ✅ Restores all databases
-- ✅ Recreates Docker volumes with original data
-- ✅ Restores configuration files
-- ✅ Updates database connection settings
-- ✅ Adjusts server IP addresses in system settings
-- ✅ Configures trusted hosts
-- ✅ Restores SSL certificates
+- Restores all databases from the SQL dumps
+- Restores the application volumes
+- Restores configuration files and, on Multi Server, `packages/`
+- Restores SSL certificates: `crt/`, `/etc/letsencrypt` and other files named in `.env`
+- Multi Server: writes this server's IP address to `host_ip_address`
+- Adds this server's hostname and IP address to `SANCTUM_STATEFUL_DOMAINS` only when that setting already lists hosts
+- Leaves `trusted_hosts` as it was in the snapshot
+
+- Starts Multi Server with an empty Redis, so queued jobs from before the snapshot do not run again
+- Adds the PanelAlpha jobs from the old `root` crontab (for example `letsencrypt-renew.sh`)
+
+It does not copy the daily snapshot job. Run `--cron install` on the new server.
 
 ---
 

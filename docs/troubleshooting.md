@@ -262,15 +262,21 @@ There is no silent fallback to a guessed path.
 
 **Solution**:
 
-1. Regenerate certificates:
+1. Check the restore log for `SSL_CERT_FULLCHAIN points to a missing file` or
+   `SSL_CERT_PRIVKEY points to a missing file`. nginx does not start until both files exist.
+   If Docker already created an empty directory at that path, remove the directory first.
+
+2. Put the certificate there, or change `SSL_CERT_FULLCHAIN` and `SSL_CERT_PRIVKEY` in
+   `/opt/panelalpha/app/.env`.
+
+3. For a Let's Encrypt certificate, renew it with the panel's script:
    ```bash
-   cd /opt/panelalpha/app
-   docker compose exec nginx certbot renew --force-renewal
+   bash /opt/panelalpha/app/letsencrypt-renew.sh
    ```
 
-2. Restart nginx:
+4. Start the panel:
    ```bash
-   docker compose restart nginx
+   cd /opt/panelalpha/app && docker compose up -d
    ```
 
 ---

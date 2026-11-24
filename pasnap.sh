@@ -9,7 +9,7 @@ set -euo pipefail
 # CONSTANTS
 # ======================
 
-readonly SCRIPT_VERSION="1.3.1"
+readonly SCRIPT_VERSION="1.4.0"
 readonly SCRIPT_NAME="PanelAlpha Snapshot & Restore Tool"
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -393,21 +393,27 @@ snapshot_docker_volume() {
     return 0
 }
 
-# snapshot_path src_dir dest_dir — rsync with cp fallback.
+# snapshot_path src_dir dest_dir [mode=false] — rsync with cp fallback.
+# mode=false skips .git/, node_modules/, vendor/, cache/ and *.log.
+# mode=true keeps vendor/, cache/ and *.log (panel code under packages/).
+# mode=all copies everything (customer project files under users/).
 snapshot_path() {
     local src="$1"
     local dest="$2"
+    local mode="${3:-false}"
 
     mkdir -p "$dest"
 
+    local excludes=()
+    if [[ "$mode" != "all" ]]; then
+        excludes+=(--exclude='.git/' --exclude='node_modules/')
+    fi
+    if [[ "$mode" == "false" ]]; then
+        excludes+=(--exclude='vendor/' --exclude='cache/' --exclude='*.log')
+    fi
+
     if command -v rsync &>/dev/null; then
-        if rsync -a \
-            --exclude='.git/' \
-            --exclude='node_modules/' \
-            --exclude='vendor/' \
-            --exclude='cache/' \
-            --exclude='*.log' \
-            "${src}/" "${dest}/" 2>/dev/null; then
+        if rsync -a "${excludes[@]}" "${src}/" "${dest}/" 2>/dev/null; then
             return 0
         fi
     fi
@@ -417,6 +423,32 @@ snapshot_path() {
     fi
 
     return 1
+}
+
+# log_stderr_tail file — log the last lines a failed command wrote to stderr.
+log_stderr_tail() {
+    local err_file="$1"
+    local line
+    [[ -s "$err_file" ]] || return 0
+    while IFS= read -r line; do
+        log ERROR "  $line"
+    done < <(tail -n 5 "$err_file")
+}
+
+# Panel version from the version file the installer writes; empty if missing.
+# A release has one line ("1.9.8.6"). A git install has one commit per repo,
+# so lines are joined with commas.
+read_panel_version() {
+    [[ -n "$PANEL_DIR" && -f "$PANEL_DIR/version" ]] || return 0
+    tr -d '\r ' < "$PANEL_DIR/version" 2>/dev/null | grep -v '^$' | paste -sd, - || true
+}
+
+# Turn a path from the panel .env into an absolute path ("./crt/x" -> "$PANEL_DIR/crt/x").
+resolve_panel_path() {
+    local path="$1"
+    [[ -z "$path" ]] && return 0
+    [[ "$path" != /* ]] && path="$PANEL_DIR/${path#./}"
+    echo "$path"
 }
 
 # Log admin 2FA row count and warn if APP_KEY is missing from snapshotted panel env.
@@ -474,15 +506,20 @@ dump_mariadb_database() {
     fi
 
     log INFO "Dumping database '$db_name' from $service..."
+    local err_file
+    err_file=$(mktemp)
     if ! timeout "${CORE_DUMP_TIMEOUT}" docker exec -e MYSQL_PWD="$password" "$container" \
         mariadb-dump -u "$user" "$db_name" \
         --single-transaction --routines --triggers --lock-tables=false \
         --add-drop-database --create-options --disable-keys \
         --extended-insert --quick --set-charset \
-        > "$outfile" 2>/dev/null; then
+        > "$outfile" 2>"$err_file"; then
         log ERROR "Failed to dump database '$db_name'"
+        log_stderr_tail "$err_file"
+        rm -f "$err_file"
         return 1
     fi
+    rm -f "$err_file"
 
     if ! verify_file_integrity "$outfile" 1000; then
         log ERROR "Database dump appears corrupted: $outfile"
@@ -1159,8 +1196,10 @@ create_snapshot_metadata() {
     case "$INSTALLATION_TYPE" in
         multi-server)
             components="- Database: panelalpha (API, from database-api)
-- Volumes: api-storage, database-api-data, redis-data (${PANEL_DIR} project)
-- Config: .env, .env-api, docker-compose.yml, packages/, SSL"
+- Database: matomo (from database-matomo, panels older than 1.8.5 only)
+- Volumes: api-storage, database-api-data, redis-data, matomo (${PANEL_DIR} project)
+- Config: .env, .env-api, docker-compose.yml, packages/ (with vendor/), version
+- SSL: crt/, /etc/letsencrypt, other files from SSL_CERT_FULLCHAIN/SSL_CERT_PRIVKEY"
             ;;
         engine)
             components="- Database: core (from database-core)
@@ -1198,6 +1237,7 @@ Creation Time: ${duration}s
 Repository: ${RESTIC_REPOSITORY:-unknown}
 Tag: $BACKUP_TAG
 Installation Type: $INSTALLATION_TYPE
+Panel Version: $(read_panel_version)
 
 Components Included:
 $components
@@ -1271,6 +1311,20 @@ snapshot_profile_multi_server() {
         snapshot_docker_volume "$PANEL_DIR" "$vol" "$snap_dir/volumes/${vol}.tar.gz" "true" || return 1
     done
 
+    # Panels older than 1.8.5 run Matomo with its own database
+    local matomo_container
+    matomo_container=$(dc_container_id "$PANEL_DIR" "database-matomo")
+    if [[ -n "$matomo_container" ]]; then
+        local matomo_password=""
+        if ! resolve_db_password "$matomo_container" "matomo" "MATOMO_MYSQL_PASSWORD" matomo_password "$env_file"; then
+            log ERROR "Cannot connect to database-matomo (checked MATOMO_MYSQL_PASSWORD in .env)"
+            return 1
+        fi
+        dump_mariadb_database "$PANEL_DIR" "database-matomo" "matomo" "$matomo_password" "matomo" \
+            "$snap_dir/databases/matomo.sql" || return 1
+        snapshot_docker_volume "$PANEL_DIR" "matomo" "$snap_dir/volumes/matomo.tar.gz" "false" || return 1
+    fi
+
     # Config files
     for f in ".env" ".env-api" "docker-compose.yml"; do
         [[ -f "$PANEL_DIR/$f" ]] && cp "$PANEL_DIR/$f" "$snap_dir/config/panel/" 2>/dev/null || true
@@ -1279,26 +1333,68 @@ snapshot_profile_multi_server() {
     verify_panel_2fa_snapshot "$PANEL_DIR" "database-api" "panelalpha" "$api_password" \
         "panelalpha" "$snap_dir/config/panel"
 
-    # packages/ directory
+    # packages/ directory, with vendor/: restore lays it over the installed panel,
+    # so the code must be complete and match the restored database.
     if [[ -d "$PANEL_DIR/packages" ]]; then
         log INFO "Snapshotting packages directory..."
-        if ! snapshot_path "$PANEL_DIR/packages" "$snap_dir/config/panel/packages"; then
+        if ! snapshot_path "$PANEL_DIR/packages" "$snap_dir/config/panel/packages" "true"; then
             log WARN "packages snapshot may be incomplete"
         fi
     else
         log INFO "No packages directory found - skipping"
     fi
+    [[ -f "$PANEL_DIR/version" ]] && cp "$PANEL_DIR/version" "$snap_dir/config/panel/" 2>/dev/null || true
 
-    # SSL certificates
-    if [[ -d "/etc/letsencrypt" ]]; then
-        log INFO "Snapshotting SSL certificates..."
-        mkdir -p "$snap_dir/config/ssl"
-        cp -r /etc/letsencrypt/ "$snap_dir/config/ssl/" 2>/dev/null || \
-            log WARN "SSL certificate snapshot incomplete"
-    fi
+    snapshot_panel_ssl "$snap_dir"
 
     log INFO "Multi-server profile snapshot complete"
     return 0
+}
+
+# nginx mounts SSL_CERT_FULLCHAIN and SSL_CERT_PRIVKEY from the panel .env. Keep
+# crt/ (installer default), /etc/letsencrypt and any other file .env points at.
+snapshot_panel_ssl() {
+    local snap_dir="$1"
+
+    if [[ -d "$PANEL_DIR/crt" ]]; then
+        log INFO "Snapshotting $PANEL_DIR/crt..."
+        mkdir -p "$snap_dir/config/panel"
+        cp -a "$PANEL_DIR/crt" "$snap_dir/config/panel/" || log WARN "crt/ snapshot incomplete"
+    fi
+
+    if [[ -d "/etc/letsencrypt" ]]; then
+        log INFO "Snapshotting /etc/letsencrypt..."
+        mkdir -p "$snap_dir/config/ssl"
+        cp -a /etc/letsencrypt "$snap_dir/config/ssl/" || log WARN "SSL certificate snapshot incomplete"
+    fi
+
+    local key path
+    for key in SSL_CERT_FULLCHAIN SSL_CERT_PRIVKEY; do
+        path=$(resolve_panel_path "$(get_env_var "$key" "$PANEL_DIR/.env")")
+        [[ -z "$path" ]] && continue
+        case "$path" in
+            "$PANEL_DIR"/crt/*|/etc/letsencrypt/*) continue ;;
+        esac
+        if [[ -f "$path" ]]; then
+            mkdir -p "$snap_dir/config/ssl/files$(dirname "$path")"
+            cp -L "$path" "$snap_dir/config/ssl/files$path" || log WARN "Could not snapshot $key file: $path"
+        else
+            log WARN "$key points to a missing file: $path"
+        fi
+    done
+}
+
+# Save the root crontab. The restore puts back only its PanelAlpha jobs
+# (for example letsencrypt-renew.sh), see restore_root_crontab.
+snapshot_root_crontab() {
+    local snap_dir="$1"
+    mkdir -p "$snap_dir/config"
+    if crontab -l > "$snap_dir/config/crontab-root.txt" 2>/dev/null; then
+        log INFO "Root crontab saved ($(grep -c "/opt/panelalpha/" "$snap_dir/config/crontab-root.txt" || true) PanelAlpha jobs)"
+    else
+        rm -f "$snap_dir/config/crontab-root.txt"
+        log INFO "No root crontab - skipping"
+    fi
 }
 
 # ======================
@@ -1368,7 +1464,8 @@ snapshot_profile_engine() {
         if [[ $users_count -gt 0 ]]; then
             log INFO "Snapshotting users directory..."
             mkdir -p "$snap_dir/users"
-            if ! snapshot_path "$ENGINE_DIR/users" "$snap_dir/users"; then
+            # Full copy: these are customer project files, nothing here is safe to skip.
+            if ! snapshot_path "$ENGINE_DIR/users" "$snap_dir/users" "all"; then
                 log WARN "Users directory snapshot may be incomplete"
             else
                 local users_size
@@ -1532,6 +1629,7 @@ create_snapshot() {
     duration=$((end_time - start_time))
 
     log INFO "Snapshot data: $total_size (${duration}s)"
+    snapshot_root_crontab "$BACKUP_TEMP_DIR"
     create_snapshot_metadata "$BACKUP_TEMP_DIR" "$total_size" "$duration"
 
     # Initialize or verify restic repository
@@ -1584,6 +1682,8 @@ create_snapshot() {
     upload_duration=$((upload_end - upload_start))
     snapshot_id=$(echo "$snapshot_result" | jq -r 'select(.snapshot_id != null) | .snapshot_id' \
         2>/dev/null | tail -1 || echo "")
+    # Restic 0.16+ prints the full 64-character ID; --restore takes the 8-character short ID.
+    snapshot_id="${snapshot_id:0:8}"
 
     # Light integrity check on uploaded data
     log INFO "Verifying repository integrity (sample)..."
@@ -1864,18 +1964,18 @@ resolve_snapshot() {
 
     if [[ "$input" == "latest" ]]; then
         SNAPSHOT_ID=$(restic snapshots --repo "$RESTIC_REPOSITORY" --tag "$BACKUP_TAG" \
-            --json 2>/dev/null | jq -r 'if length > 0 then .[0].short_id else empty end' \
+            --json 2>/dev/null | jq -r 'sort_by(.time) | last | .short_id // empty' \
             2>/dev/null || echo "")
 
         if [[ -z "$SNAPSHOT_ID" || "$SNAPSHOT_ID" == "null" ]]; then
             SNAPSHOT_ID=$(restic snapshots --repo "$RESTIC_REPOSITORY" --tag "panelalpha" \
-                --json 2>/dev/null | jq -r 'if length > 0 then .[0].short_id else empty end' \
+                --json 2>/dev/null | jq -r 'sort_by(.time) | last | .short_id // empty' \
                 2>/dev/null || echo "")
         fi
 
         if [[ -z "$SNAPSHOT_ID" || "$SNAPSHOT_ID" == "null" ]]; then
             SNAPSHOT_ID=$(restic snapshots --repo "$RESTIC_REPOSITORY" \
-                --json 2>/dev/null | jq -r 'if length > 0 then .[0].short_id else empty end' \
+                --json 2>/dev/null | jq -r 'sort_by(.time) | last | .short_id // empty' \
                 2>/dev/null || echo "")
         fi
 
@@ -1884,7 +1984,10 @@ resolve_snapshot() {
             log ERROR "Create a snapshot first: $0 --snapshot"
             exit 1
         fi
-        log INFO "Latest snapshot: $SNAPSHOT_ID"
+        local snapshot_origin=""
+        snapshot_origin=$(restic snapshots --repo "$RESTIC_REPOSITORY" --json "$SNAPSHOT_ID" 2>/dev/null | \
+            jq -r '.[0] | "taken \(.time) on \(.hostname)"' 2>/dev/null || echo "")
+        log INFO "Latest snapshot: $SNAPSHOT_ID ${snapshot_origin}"
     else
         SNAPSHOT_ID="$input"
     fi
@@ -1912,7 +2015,10 @@ wait_for_database_containers() {
         for svc in "${services[@]}"; do
             local cid
             cid=$(dc_container_id "$compose_dir" "$svc")
-            if [[ -z "$cid" ]] || ! docker exec "$cid" mariadb-admin ping --silent 2>/dev/null; then
+            # Ping over TCP: during first start the image runs a temporary server
+            # with networking off, and a socket ping would report it as ready.
+            if [[ -z "$cid" ]] || ! docker exec "$cid" \
+                mariadb-admin --protocol=tcp -h 127.0.0.1 ping --silent &>/dev/null; then
                 all_ready=false
                 break
             fi
@@ -2029,23 +2135,27 @@ restore_single_database() {
     fi
 
     # Import SQL dump
-    local import_ok=false
+    local import_ok=false err_file
+    err_file=$(mktemp)
     if [[ "$sql_file" == *.gz ]]; then
         if gunzip -c "$sql_file" | \
-            mariadb_exec_stdin "$container" "$db_user" "$db_password" "$db_name" 2>/dev/null; then
+            mariadb_exec_stdin "$container" "$db_user" "$db_password" "$db_name" 2>"$err_file"; then
             import_ok=true
         fi
     else
         if mariadb_exec_stdin "$container" "$db_user" "$db_password" "$db_name" \
-            < "$sql_file" 2>/dev/null; then
+            < "$sql_file" 2>"$err_file"; then
             import_ok=true
         fi
     fi
 
     if [[ "$import_ok" == "false" ]]; then
         log ERROR "Failed to import database $db_name"
+        log_stderr_tail "$err_file"
+        rm -f "$err_file"
         return 1
     fi
+    rm -f "$err_file"
 
     local table_count
     table_count=$(mariadb_exec "$container" "$db_user" "$db_password" \
@@ -2127,19 +2237,16 @@ update_system_settings() {
         return 0
     fi
 
-    local server_ip server_hostname
+    local server_ip
     server_ip=$(hostname -I 2>/dev/null | awk '{print $1}' || echo "127.0.0.1")
-    server_hostname=$(hostname 2>/dev/null || echo "localhost")
 
     mariadb_exec "$container" "panelalpha" "$api_password" panelalpha \
         -e "UPDATE system_settings SET value='$server_ip' WHERE name='host_ip_address';" \
         2>/dev/null && log INFO "Updated host_ip_address: $server_ip" || \
         log WARN "Could not update host_ip_address"
 
-    mariadb_exec "$container" "panelalpha" "$api_password" panelalpha \
-        -e "UPDATE system_settings SET value='$server_hostname' WHERE name='trusted_hosts';" \
-        2>/dev/null && log INFO "Updated trusted_hosts: $server_hostname" || \
-        log WARN "Could not update trusted_hosts"
+    # trusted_hosts stays as restored. The installer sets it to "*" and admins add
+    # their panel domains to it; replacing it breaks login on those domains.
 }
 
 # Keep an env assignment, or append it. Value must not contain newlines.
@@ -2155,7 +2262,7 @@ upsert_env_var() {
     fi
 }
 
-# Admin login by IP needs the address in SANCTUM_STATEFUL_DOMAINS.
+# When SANCTUM_STATEFUL_DOMAINS is set, admin login by IP needs the address in it.
 # Do not also put that IP in trusted_hosts: SetSessionDomain would set the
 # session cookie Domain to the raw IP, and browsers drop that cookie.
 sync_sanctum_stateful_domains() {
@@ -2172,6 +2279,14 @@ sync_sanctum_stateful_domains() {
 
     local current=""
     current=$(get_env_var "SANCTUM_STATEFUL_DOMAINS" "$env_file")
+
+    # Empty is the installer default: the panel then takes the stateful host from
+    # each request (trusted_hosts, panel URLs). Setting a list here would turn
+    # that off and break login on every panel domain that is not in the list.
+    if [[ -z "$current" ]]; then
+        log INFO "SANCTUM_STATEFUL_DOMAINS is empty in $env_file - panel sets it per request, leaving it unchanged"
+        return 0
+    fi
 
     local candidates=()
     local part extra
@@ -2259,11 +2374,86 @@ _restore_config_panel_dir() {
         fi
     fi
 
-    if [[ -d "$config_panel/ssl/letsencrypt" ]]; then
-        log INFO "Restoring SSL certificates..."
+    _restore_panel_ssl "$data_dir" "$target_dir"
+}
+
+# Restore what snapshot_panel_ssl saved: crt/, /etc/letsencrypt and other cert files.
+_restore_panel_ssl() {
+    local data_dir="$1"
+    local target_dir="$2"
+    local config_panel="$data_dir/config/panel"
+    local config_ssl="$data_dir/config/ssl"
+
+    if [[ -d "$config_panel/crt" ]]; then
+        log INFO "Restoring $target_dir/crt..."
+        mkdir -p "$target_dir/crt"
+        cp -a "$config_panel/crt/." "$target_dir/crt/" || log WARN "crt/ restore incomplete"
+    fi
+
+    if [[ -d "$config_ssl/letsencrypt" ]]; then
+        log INFO "Restoring /etc/letsencrypt..."
         mkdir -p /etc/letsencrypt
-        cp -r "$config_panel/ssl/letsencrypt/"* /etc/letsencrypt/ 2>/dev/null || \
-            log WARN "SSL restore incomplete"
+        cp -a "$config_ssl/letsencrypt/." /etc/letsencrypt/ || log WARN "SSL restore incomplete"
+    fi
+
+    if [[ -d "$config_ssl/files" ]]; then
+        local file dest
+        while IFS= read -r -d '' file; do
+            dest="${file#"$config_ssl/files"}"
+            mkdir -p "$(dirname "$dest")"
+            if cp -p "$file" "$dest"; then
+                log INFO "Restored certificate file $dest"
+            else
+                log WARN "Could not restore certificate file $dest"
+            fi
+        done < <(find "$config_ssl/files" -type f -print0)
+    fi
+}
+
+# nginx mounts SSL_CERT_FULLCHAIN and SSL_CERT_PRIVKEY from the panel .env.
+# Docker turns a missing file into an empty directory and nginx does not start.
+check_panel_ssl_files() {
+    local key path missing=false
+    for key in SSL_CERT_FULLCHAIN SSL_CERT_PRIVKEY; do
+        path=$(resolve_panel_path "$(get_env_var "$key" "$PANEL_DIR/.env")")
+        if [[ -n "$path" && ! -f "$path" ]]; then
+            log ERROR "$key points to a missing file: $path"
+            missing=true
+        fi
+    done
+    if [[ "$missing" == "true" ]]; then
+        log ERROR "nginx will not start until these files exist. Put the certificate there or change"
+        log ERROR "SSL_CERT_FULLCHAIN/SSL_CERT_PRIVKEY in $PANEL_DIR/.env, then run: cd $PANEL_DIR && docker compose up -d"
+        return 1
+    fi
+    return 0
+}
+
+# Add the PanelAlpha jobs from the snapshot's root crontab that this server lacks.
+# Other lines stay out: they belong to the old server. The tool's own daily
+# snapshot is left to --cron install, because its path may differ here.
+restore_root_crontab() {
+    local data_dir="$1"
+    local saved="$data_dir/config/crontab-root.txt"
+    [[ -f "$saved" ]] || return 0
+
+    local current line added=0
+    current=$(crontab -l 2>/dev/null || true)
+    while IFS= read -r line; do
+        [[ "$line" == *"/opt/panelalpha/"* ]] || continue
+        [[ "$line" =~ ^[[:space:]]*# ]] && continue
+        [[ "$line" == *"pasnap.sh"* ]] && continue
+        grep -qxF -- "$line" <<< "$current" && continue
+        current=$(printf '%s\n%s' "$current" "$line")
+        log INFO "Adding cron job from snapshot: $line"
+        added=$((added + 1))
+    done < "$saved"
+
+    if [[ $added -gt 0 ]]; then
+        printf '%s\n' "$current" | sed '/./,$!d' | crontab - || log WARN "Could not update the root crontab"
+    fi
+    if grep -q "pasnap.sh" "$saved" && ! crontab -l 2>/dev/null | grep -q "pasnap.sh"; then
+        log WARN "Daily snapshots are not scheduled on this server. Run: $0 --cron install"
     fi
 }
 
@@ -2357,6 +2547,22 @@ restore_from_snapshot() {
         fi
     fi
 
+    # The restore lays the snapshot's database over the installed panel code.
+    # Different versions leave the database schema and the code out of step.
+    local snapshot_version="" installed_version=""
+    snapshot_version=$(grep "^Panel Version:" "$data_dir/snapshot-info.txt" 2>/dev/null | \
+        cut -d: -f2- | tr -d ' ' || echo "")
+    installed_version=$(read_panel_version)
+    if [[ -n "$snapshot_version" && -n "$installed_version" && "$snapshot_version" != "$installed_version" ]]; then
+        log WARN "Snapshot was taken on panel version $snapshot_version, this server runs $installed_version"
+        log WARN "Install panel version $snapshot_version on this server first, then restore"
+        read -r -p "Continue anyway? (yes/no): " version_confirm
+        if [[ "$version_confirm" != "yes" ]]; then
+            log INFO "Restore cancelled"
+            return 0
+        fi
+    fi
+
     echo ""
     log WARN "This will replace current PanelAlpha data. ALL CURRENT DATA WILL BE LOST!"
     echo ""
@@ -2396,18 +2602,28 @@ _restore_multi_server() {
     dc "$PANEL_DIR" down 2>/dev/null || true
     sleep 10
 
+    # Panels older than 1.8.5 also have a Matomo database
+    # redis-data is emptied, not restored: it holds the job queue, and jobs queued
+    # before the snapshot have already run (sent mail, changed servers) since then.
+    local db_services=("database-api") db_volumes=("database-api-data" "redis-data")
+    if [[ -f "$data_dir/databases/matomo.sql" ]]; then
+        db_services+=("database-matomo")
+        db_volumes+=("database-matomo-data")
+    fi
+
     # Clean only database volumes
-    clean_db_volumes "$PANEL_DIR" "database-api-data"
+    clean_db_volumes "$PANEL_DIR" "${db_volumes[@]}"
 
     # Restore panel config
     _restore_config_panel_dir "$data_dir" "$PANEL_DIR" "true"
     sync_sanctum_stateful_domains "$PANEL_DIR/.env-api"
+    check_panel_ssl_files || true
 
-    # Start only the database container
-    log INFO "Starting database-api..."
-    dc "$PANEL_DIR" up -d database-api
-    wait_for_database_containers "$PANEL_DIR" "database-api" || {
-        log ERROR "database-api failed to become ready"
+    # Start only the database containers
+    log INFO "Starting ${db_services[*]}..."
+    dc "$PANEL_DIR" up -d "${db_services[@]}"
+    wait_for_database_containers "$PANEL_DIR" "${db_services[@]}" || {
+        log ERROR "${db_services[*]} failed to become ready"
         exit 1
     }
 
@@ -2422,8 +2638,15 @@ _restore_multi_server() {
         log WARN "panelalpha-api.sql not found in snapshot - database not restored"
     fi
 
+    if [[ -f "$data_dir/databases/matomo.sql" ]]; then
+        restore_single_database "matomo" "$PANEL_DIR" "database-matomo" "matomo" \
+            "$(get_env_var "MATOMO_MYSQL_PASSWORD" "$env_file")" "$data_dir/databases/matomo.sql" || exit 1
+    fi
+
+    log WARN "Redis starts empty: queued jobs and cache from before the restore are dropped"
+
     # Application volumes only — do not restore database-api-data (would override SQL)
-    for vol in "api-storage" "redis-data"; do
+    for vol in "api-storage" "matomo"; do
         restore_volume "$PANEL_DIR" "$vol" "$data_dir/volumes/${vol}.tar.gz" || \
             log WARN "Volume $vol restore failed"
     done
@@ -2436,6 +2659,7 @@ _restore_multi_server() {
     wait_for_database_containers "$PANEL_DIR" "database-api" || \
         log WARN "database-api not ready after full start"
     update_system_settings
+    restore_root_crontab "$data_dir"
 
     dc "$PANEL_DIR" ps 2>/dev/null || true
     log INFO "Multi-server restore complete"
@@ -2528,6 +2752,7 @@ _restore_engine() {
     dc "$ENGINE_DIR" up -d
     sleep 20
 
+    restore_root_crontab "$data_dir"
     dc "$ENGINE_DIR" ps 2>/dev/null || true
     log INFO "Engine restore complete"
 }
@@ -2652,6 +2877,7 @@ _restore_single_server() {
     dc "$PANEL_DIR" up -d
     sleep 10
 
+    restore_root_crontab "$data_dir"
     dc "$ENGINE_DIR" ps 2>/dev/null || true
     dc "$PANEL_DIR"  ps 2>/dev/null || true
     log INFO "Single-server restore complete"
